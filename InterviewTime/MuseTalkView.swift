@@ -8,6 +8,7 @@
 
 import SwiftUI
 import AVKit
+import AVFoundation
 
 struct MuseTalkView: View {
     let onBack: () -> Void
@@ -45,6 +46,10 @@ struct MuseTalkView: View {
 
     // Video call UI state
     @State private var showSettings = false
+    @State private var micOn = true
+    @State private var cameraOn = true
+    @State private var pipOffset: CGSize = .zero
+    @GestureState private var pipDragTranslation: CGSize = .zero
 
     // Idle loop
     @State private var idleLoopPlayer: AVQueuePlayer?
@@ -112,6 +117,18 @@ struct MuseTalkView: View {
                         selfViewPiP
                             .padding(.trailing, 16)
                             .padding(.bottom, 14)
+                            .offset(x: pipOffset.width + pipDragTranslation.width,
+                                    y: pipOffset.height + pipDragTranslation.height)
+                            .gesture(
+                                DragGesture()
+                                    .updating($pipDragTranslation) { value, state, _ in
+                                        state = value.translation
+                                    }
+                                    .onEnded { value in
+                                        pipOffset.width += value.translation.width
+                                        pipOffset.height += value.translation.height
+                                    }
+                            )
                     }
                 }
             }
@@ -199,50 +216,17 @@ struct MuseTalkView: View {
                 previewPlaceholder
             }
 
-            // Talking video overlaid on top when active
+            // Talking video overlaid on top when active — cross-fades in/out
             if isTalking, let player {
                 FullScreenVideoPlayer(player: player)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.opacity)
             }
 
-            // Thinking overlay on top of whatever is showing (self-guards on isRendering)
-            thinkingOverlay
-
-            // Status badge — top-right
-            if let badge = statusBadge {
-                VStack {
-                    HStack {
-                        Spacer()
-                        HStack(spacing: 5) {
-                            if badge.1 == .orange {
-                                ProgressView().controlSize(.mini).scaleEffect(0.7)
-                            } else {
-                                Circle().fill(badge.1).frame(width: 5, height: 5)
-                            }
-                            Text(badge.0)
-                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                .foregroundColor(badge.1)
-                                .tracking(0.5)
-                        }
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(.black.opacity(0.65), in: Capsule())
-                        .padding(14)
-                    }
-                    Spacer()
-                }
-            }
-
-            // Render info — bottom center
-            if let info = renderInfo {
-                VStack {
-                    Spacer()
-                    Text(info)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.green.opacity(0.85))
-                        .padding(.horizontal, 12).padding(.vertical, 5)
-                        .background(.black.opacity(0.55), in: Capsule())
-                        .padding(.bottom, 14)
-                }
+            // Loading spinner — centered, shown while generating/rendering
+            if isRendering {
+                ProgressView()
+                    .controlSize(.large)
             }
 
             // Interviewer name tag — bottom-left
@@ -250,10 +234,10 @@ struct MuseTalkView: View {
                 Spacer()
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Alex Chen")
+                        Text("Gemala")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(.white)
-                        Text("Senior Engineering Manager")
+                        Text("AI/ML Engineer Manager")
                             .font(.system(size: 10))
                             .foregroundColor(.white.opacity(0.6))
                     }
@@ -266,6 +250,7 @@ struct MuseTalkView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeInOut(duration: 0.4), value: isTalking)
     }
 
     // MARK: - Self-view PiP
@@ -274,16 +259,21 @@ struct MuseTalkView: View {
         ZStack {
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color(hex: "141820"))
+            CameraPreview(isActive: cameraOn)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .opacity(cameraOn ? 1 : 0)
+            if !cameraOn {
+                VStack(spacing: 5) {
+                    Image(systemName: "video.slash.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.white.opacity(0.4))
+                    Text("Camera off")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(.white.opacity(0.3))
+                }
+            }
             RoundedRectangle(cornerRadius: 10)
                 .stroke(Color.white.opacity(0.12), lineWidth: 1)
-            VStack(spacing: 5) {
-                Image(systemName: "person.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.white.opacity(0.25))
-                Text("You")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundColor(.white.opacity(0.3))
-            }
         }
         .frame(width: 112, height: 82)
         .shadow(color: .black.opacity(0.5), radius: 8, y: 4)
@@ -294,8 +284,18 @@ struct MuseTalkView: View {
     private var callControlBar: some View {
         HStack(spacing: 0) {
             HStack(spacing: 14) {
-                callControlButton(icon: "mic.fill", label: "Mute", tint: .white, action: {})
-                callControlButton(icon: "video.fill", label: "Camera", tint: .white, action: {})
+                callControlButton(
+                    icon: micOn ? "mic.fill" : "mic.slash.fill",
+                    label: micOn ? "Mute" : "Unmute",
+                    tint: micOn ? .white : .red,
+                    highlighted: !micOn
+                ) { micOn.toggle() }
+                callControlButton(
+                    icon: cameraOn ? "video.fill" : "video.slash.fill",
+                    label: "Camera",
+                    tint: cameraOn ? .white : .red,
+                    highlighted: !cameraOn
+                ) { cameraOn.toggle() }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -304,7 +304,7 @@ struct MuseTalkView: View {
                 HStack(spacing: 8) {
                     Image(systemName: isRendering ? "hourglass" : "play.fill")
                         .font(.system(size: 13, weight: .semibold))
-                    Text(isRendering ? "Working…" : "Speak")
+                    Text(isRendering ? "Working…" : "Start")
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .padding(.horizontal, 24).padding(.vertical, 11)
@@ -339,7 +339,7 @@ struct MuseTalkView: View {
                             .foregroundColor(.white)
                             .frame(width: 44, height: 44)
                             .background(Color.red, in: Circle())
-                        Text("End")
+                        Text("Leave")
                             .font(.system(size: 9, weight: .medium))
                             .foregroundColor(.secondary)
                     }
@@ -577,36 +577,6 @@ struct MuseTalkView: View {
                 }
                 .padding(20)
             }
-        }
-    }
-
-    // MARK: - Shared overlays (reused by mainVideoArea)
-
-    @ViewBuilder
-    private var thinkingOverlay: some View {
-        if isRendering {
-            ZStack {
-                Color.black.opacity(0.22)
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("thinking…")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.9))
-                }
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(.black.opacity(0.45), in: Capsule())
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 0))
-        }
-    }
-
-    private var statusBadge: (String, Color)? {
-        switch renderState {
-        case .idle:            return nil
-        case .generatingAudio: return ("GENERATING", .orange)
-        case .rendering:       return ("RENDERING", .orange)
-        case .ready:           return ("READY", .green)
-        case .error:           return ("ERROR", .red)
         }
     }
 
@@ -1043,5 +1013,77 @@ final class PlayerLayerView: NSView {
     override func layout() {
         super.layout()
         playerLayer.frame = bounds
+    }
+}
+
+// MARK: - Live Camera Preview
+
+struct CameraPreview: NSViewRepresentable {
+    let isActive: Bool
+
+    func makeNSView(context: Context) -> CameraPreviewView {
+        let view = CameraPreviewView()
+        if isActive { view.start() }
+        return view
+    }
+
+    func updateNSView(_ nsView: CameraPreviewView, context: Context) {
+        isActive ? nsView.start() : nsView.stop()
+    }
+
+    static func dismantleNSView(_ nsView: CameraPreviewView, coordinator: ()) {
+        nsView.stop()
+    }
+}
+
+final class CameraPreviewView: NSView {
+    private let session = AVCaptureSession()
+    private let previewLayer = AVCaptureVideoPreviewLayer()
+    private var configured = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        previewLayer.videoGravity = .resizeAspectFill
+        previewLayer.session = session
+        layer?.addSublayer(previewLayer)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        previewLayer.frame = bounds
+    }
+
+    func start() {
+        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+            guard granted else { return }
+            DispatchQueue.main.async { self?.beginRunning() }
+        }
+    }
+
+    func stop() {
+        guard session.isRunning else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [session] in session.stopRunning() }
+    }
+
+    private func beginRunning() {
+        if !configured {
+            configured = true
+            guard let device = AVCaptureDevice.default(for: .video),
+                  let input = try? AVCaptureDeviceInput(device: device),
+                  session.canAddInput(input) else { return }
+            session.beginConfiguration()
+            session.sessionPreset = .medium
+            session.addInput(input)
+            if let connection = previewLayer.connection, connection.isVideoMirroringSupported {
+                connection.automaticallyAdjustsVideoMirroring = false
+                connection.isVideoMirrored = true
+            }
+            session.commitConfiguration()
+        }
+        guard !session.isRunning else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [session] in session.startRunning() }
     }
 }
