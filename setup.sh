@@ -16,7 +16,7 @@ echo "==> [2/4] Creating MuseTalk environment (musetalk-env)..."
 python3 -m venv envs/musetalk-env
 envs/musetalk-env/bin/pip install -q --upgrade pip
 envs/musetalk-env/bin/pip install -q -r MuseTalk/requirements.txt
-envs/musetalk-env/bin/pip install -q coremltools
+envs/musetalk-env/bin/pip install -q coremltools torch torchvision onnxruntime
 
 echo "==> [3/4] Downloading VoxCPM2-8bit (TTS)..."
 mkdir -p models/VoxCPM2-8bit
@@ -54,7 +54,7 @@ envs/musetalk-env/bin/huggingface-cli download yzd-v/DWPose \
 
 # Face parse BiSeNet
 envs/musetalk-env/bin/python -m gdown \
-  --id 154JgKpzCPW82qINcVieuPH3fZ2e0P812 \
+  154JgKpzCPW82qINcVieuPH3fZ2e0P812 \
   -O models/face-parse-bisent/79999_iter.pth
 curl -L https://download.pytorch.org/models/resnet18-5c106cde.pth \
   -o models/face-parse-bisent/resnet18-5c106cde.pth

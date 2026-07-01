@@ -1,5 +1,7 @@
-# MuseTalk — clone separately via setup.sh
-MuseTalk/
+# MuseTalk — vendored source + custom pipeline code is tracked;
+# only downloaded/generated artifacts are ignored (see setup.sh)
+MuseTalk/models
+MuseTalk/mlpackage
 
 # Models & weights — download via setup.sh
 models/
