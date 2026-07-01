@@ -826,9 +826,12 @@ struct MuseTalkView: View {
         let template = AVPlayerItem(url: url)
         let looper = AVPlayerLooper(player: player, templateItem: template)
 
+        // ponytail: observe the player's actual enqueued item, not the template —
+        // the looper plays copies of the template, so template.status can stay
+        // .unknown forever and the swap-in never fires (static portrait instead).
         idleReadyObserver?.invalidate()
-        idleReadyObserver = template.observe(\.status, options: [.new, .initial]) { item, _ in
-            guard item.status == .readyToPlay else { return }
+        idleReadyObserver = player.observe(\.currentItem?.status, options: [.new, .initial]) { p, _ in
+            guard p.currentItem?.status == .readyToPlay else { return }
             DispatchQueue.main.async {
                 currentIdleLoopURL = url
                 idleLooper = looper
