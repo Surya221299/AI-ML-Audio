@@ -54,6 +54,7 @@ struct MuseTalkView: View {
     @State private var idleLooper: AVPlayerLooper?
     @State private var currentIdleLoopURL: URL?
     @State private var idleRotationTask: Task<Void, Never>?
+    @State private var idleReadyObserver: NSKeyValueObservation?
 
     private var projectRoot: URL {
         URL(fileURLWithPath: #file)
@@ -672,7 +673,15 @@ struct MuseTalkView: View {
         let fw = firstWord.map { String(format: "first word %.1fs · ", $0) } ?? ""
         renderInfo = "\(sessionLabel) · \(fw)" + String(format: "done %.1fs", total)
         renderState = startedPlayback ? .ready : .error("no video produced")
-        if startedPlayback, player?.currentItem == nil { isTalking = false }
+        if startedPlayback, player?.currentItem == nil { returnToIdle() }
+    }
+
+    /// Leaves the talking state and always hands the screen back to an idle
+    /// loop — the two call sites (playback drains before generation finishes,
+    /// or generation finishes before playback drains) must never skip this.
+    private func returnToIdle() {
+        isTalking = false
+        switchIdleLoop()
     }
 
     private func fetchTTSWav(text: String, emotion: String,
@@ -767,9 +776,7 @@ struct MuseTalkView: View {
                 forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main
             ) { _ in
                 if generationDone, (player?.items().count ?? 0) <= 1 {
-                    isTalking = false
-                    // Hand back to a (possibly different) idle loop
-                    switchIdleLoop()
+                    returnToIdle()
                 }
             }
             q.play()
@@ -792,9 +799,9 @@ struct MuseTalkView: View {
     private func switchIdleLoop() {
         let candidates = idleLoopURLs()
         guard !candidates.isEmpty else { return }
-        // ponytail: idle_loop2 is favored 3:1 over the others — bump the count if it needs more/less airtime.
+        // ponytail: idle_loop2 is favored 6:1 over the others — bump the count if it needs more/less airtime.
         let weighted = candidates.flatMap { url in
-            Array(repeating: url, count: url.lastPathComponent.contains("loop2") ? 3 : 1)
+            Array(repeating: url, count: url.lastPathComponent.contains("loop2") ? 6 : 1)
         }
         guard let next = weighted.randomElement() else { return }
         guard next != currentIdleLoopURL || idleLoopPlayer == nil else { return }
@@ -810,14 +817,25 @@ struct MuseTalkView: View {
         }
     }
 
+    /// Builds the next idle player off-screen and only swaps it in once it has
+    /// a decoded frame ready — otherwise the layer briefly shows the dark
+    /// background behind it while the new video loads.
     private func playIdleLoop(_ url: URL) {
-        currentIdleLoopURL = url
         let player = AVQueuePlayer()
         player.isMuted = true  // silence — visual only
         let template = AVPlayerItem(url: url)
-        idleLooper = AVPlayerLooper(player: player, templateItem: template)
-        idleLoopPlayer = player
-        player.play()
+        let looper = AVPlayerLooper(player: player, templateItem: template)
+
+        idleReadyObserver?.invalidate()
+        idleReadyObserver = template.observe(\.status, options: [.new, .initial]) { item, _ in
+            guard item.status == .readyToPlay else { return }
+            DispatchQueue.main.async {
+                currentIdleLoopURL = url
+                idleLooper = looper
+                idleLoopPlayer = player
+                player.play()
+            }
+        }
     }
 
     // MARK: - Helpers
