@@ -30,15 +30,13 @@ struct MuseTalkView: View {
     @State private var generationDone = false
     @State private var sessionStart = Date()
     @State private var firstWord: Double?
-    @State private var cachedAudioURLs: [URL] = []
-    @State private var selectedAudio: URL?
     @State private var endObserver: NSObjectProtocol?
 
     // TTS generation params
-    @State private var cfgValue        = SimpleTTSGenerationOptions.fastBalanced.cfgValue
-    @State private var inferenceSteps  = Double(SimpleTTSGenerationOptions.fastBalanced.inferenceTimesteps)
-    @State private var maxTokens       = Double(SimpleTTSGenerationOptions.fastBalanced.maxTokens)
-    @State private var warmupPatches   = Double(SimpleTTSGenerationOptions.fastBalanced.warmupPatches)
+    @State private var cfgValue        = SimpleTTSGenerationOptions.museTalkDefault.cfgValue
+    @State private var inferenceSteps  = Double(SimpleTTSGenerationOptions.museTalkDefault.inferenceTimesteps)
+    @State private var maxTokens       = Double(SimpleTTSGenerationOptions.museTalkDefault.maxTokens)
+    @State private var warmupPatches   = Double(SimpleTTSGenerationOptions.museTalkDefault.warmupPatches)
 
     // Timing
     @State private var lastFirstWord: Double?
@@ -47,13 +45,15 @@ struct MuseTalkView: View {
     // Video call UI state
     @State private var showSettings = false
     @State private var micOn = true
-    @State private var cameraOn = true
+    @State private var cameraOn = false
     @State private var pipOffset: CGSize = .zero
     @GestureState private var pipDragTranslation: CGSize = .zero
 
     // Idle loop
     @State private var idleLoopPlayer: AVQueuePlayer?
     @State private var idleLooper: AVPlayerLooper?
+    @State private var currentIdleLoopURL: URL?
+    @State private var idleRotationTask: Task<Void, Never>?
 
     private var projectRoot: URL {
         URL(fileURLWithPath: #file)
@@ -61,9 +61,6 @@ struct MuseTalkView: View {
             .deletingLastPathComponent()
     }
     private var cacheDir: URL { projectRoot.appendingPathComponent("outputs") }
-    private func sentenceAudioURL(_ i: Int) -> URL {
-        cacheDir.appendingPathComponent("last_tts_\(i).wav")
-    }
 
     private func sourceImageData() throws -> Data {
         guard let img = NSImage(named: "Interviewer"),
@@ -164,8 +161,7 @@ struct MuseTalkView: View {
         .animation(.easeInOut(duration: 0.22), value: showSettings)
         .task {
             portrait = NSImage(named: "Interviewer").map { cappedImage($0, maxSide: 384) }
-            refreshCachedAudio()
-            loadIdleLoop()
+            switchIdleLoop()
             await checkServer()
         }
     }
@@ -530,44 +526,6 @@ struct MuseTalkView: View {
                         .buttonStyle(.plain)
                         .disabled(serverStatus != .online || isRendering)
 
-                        if !cachedAudioURLs.isEmpty {
-                            Picker("", selection: Binding(
-                                get: { selectedAudio ?? cachedAudioURLs[0] },
-                                set: { selectedAudio = $0 }
-                            )) {
-                                ForEach(cachedAudioURLs, id: \.self) { url in
-                                    Text(url.lastPathComponent).tag(url)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .font(.system(size: 11, design: .monospaced))
-                            .padding(.horizontal, 10).padding(.vertical, 8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.09)))
-                        }
-
-                        Button(action: { Task { await lipSyncSelectedAudio() } }) {
-                            HStack {
-                                Image(systemName: "arrow.clockwise")
-                                Text(selectedAudio.map { $0.lastPathComponent } ?? "Lip-sync audio")
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
-                            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.09)))
-                            .foregroundColor(
-                                (serverStatus == .online && selectedAudio != nil && !isRendering)
-                                    ? .indigo : .secondary
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(serverStatus != .online || selectedAudio == nil || isRendering)
-
                         if let info = renderInfo {
                             Text(info)
                                 .font(.system(size: 10, design: .monospaced))
@@ -660,8 +618,6 @@ struct MuseTalkView: View {
 
     private func generateAndLipSync() async {
         beginSession(label: "TTS+render")
-        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        clearCachedAudio()
 
         // ponytail: full text in one TTS call so VoxCPM2 maintains a single speaker
         // identity throughout — per-sentence calls produce voice drift across generations.
@@ -673,17 +629,6 @@ struct MuseTalkView: View {
             finishSession()
             return
         }
-        try? wav.write(to: sentenceAudioURL(0))
-        do { try await streamLipSync(audio: wav) }
-        catch { renderState = .error(error.localizedDescription); return }
-        refreshCachedAudio()
-        finishSession()
-    }
-
-    private func lipSyncSelectedAudio() async {
-        guard let url = selectedAudio, let wav = try? Data(contentsOf: url) else { return }
-        beginSession(label: "no TTS")
-        renderState = .rendering
         do { try await streamLipSync(audio: wav) }
         catch { renderState = .error(error.localizedDescription); return }
         finishSession()
@@ -703,11 +648,23 @@ struct MuseTalkView: View {
         sessionStart = Date()
         renderState = .generatingAudio
         sessionLabel = label
+
+        // ponytail: idle loops are ~8s — if TTS/render runs long, cycle to a
+        // different loop so the wait doesn't visibly repeat the same clip.
+        idleRotationTask?.cancel()
+        idleRotationTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                guard !Task.isCancelled else { return }
+                switchIdleLoop()
+            }
+        }
     }
 
     @State private var sessionLabel = ""
 
     private func finishSession() {
+        idleRotationTask?.cancel()
         generationDone = true
         let total = Date().timeIntervalSince(sessionStart)
         lastFirstWord = firstWord
@@ -798,6 +755,7 @@ struct MuseTalkView: View {
 
     private func enqueue(_ item: AVPlayerItem) {
         if !startedPlayback {
+            idleRotationTask?.cancel()
             let q = AVQueuePlayer(playerItem: item)
             q.actionAtItemEnd = .advance
             player = q
@@ -810,8 +768,8 @@ struct MuseTalkView: View {
             ) { _ in
                 if generationDone, (player?.items().count ?? 0) <= 1 {
                     isTalking = false
-                    // Hand back to the idle loop
-                    idleLoopPlayer?.play()
+                    // Hand back to a (possibly different) idle loop
+                    switchIdleLoop()
                 }
             }
             q.play()
@@ -822,12 +780,29 @@ struct MuseTalkView: View {
 
     // MARK: - Idle loop
 
-    private func loadIdleLoop() {
-        let url = projectRoot.appendingPathComponent("outputs/idle_loop.mp4")
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
+    private func idleLoopURLs() -> [URL] {
+        let dir = projectRoot.appendingPathComponent("outputs")
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        return files
+            .filter { $0.lastPathComponent.hasPrefix("idle_loop") && $0.pathExtension == "mp4" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Swaps the idle background to a (weighted-random) loop file.
+    private func switchIdleLoop() {
+        let candidates = idleLoopURLs()
+        guard !candidates.isEmpty else { return }
+        // ponytail: idle_loop2 is favored 3:1 over the others — bump the count if it needs more/less airtime.
+        let weighted = candidates.flatMap { url in
+            Array(repeating: url, count: url.lastPathComponent.contains("loop2") ? 3 : 1)
+        }
+        guard let next = weighted.randomElement() else { return }
+        guard next != currentIdleLoopURL || idleLoopPlayer == nil else { return }
+
+        currentIdleLoopURL = next
         let player = AVQueuePlayer()
         player.isMuted = true  // silence — visual only
-        let template = AVPlayerItem(url: url)
+        let template = AVPlayerItem(url: next)
         idleLooper = AVPlayerLooper(player: player, templateItem: template)
         idleLoopPlayer = player
         player.play()
@@ -873,24 +848,6 @@ struct MuseTalkView: View {
             }
         }
         return merged.isEmpty ? [text] : merged
-    }
-
-    private func clearCachedAudio() {
-        // ponytail: only delete generated files, leave user's other wavs in outputs/
-        let toDelete = cachedAudioURLs.filter { $0.lastPathComponent.hasPrefix("last_tts_") }
-        for url in toDelete { try? FileManager.default.removeItem(at: url) }
-        cachedAudioURLs = cachedAudioURLs.filter { !$0.lastPathComponent.hasPrefix("last_tts_") }
-        if !cachedAudioURLs.contains(where: { $0 == selectedAudio }) { selectedAudio = cachedAudioURLs.first }
-    }
-
-    private func refreshCachedAudio() {
-        let files = (try? FileManager.default.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: nil)) ?? []
-        cachedAudioURLs = files
-            .filter { $0.pathExtension == "wav" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        if selectedAudio == nil || !cachedAudioURLs.contains(where: { $0 == selectedAudio }) {
-            selectedAudio = cachedAudioURLs.first
-        }
     }
 
     private func err(_ msg: String) -> NSError {
