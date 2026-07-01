@@ -8,6 +8,7 @@
 
 import SwiftUI
 import AVKit
+import AVFoundation
 
 struct MuseTalkView: View {
     let onBack: () -> Void
@@ -29,15 +30,13 @@ struct MuseTalkView: View {
     @State private var generationDone = false
     @State private var sessionStart = Date()
     @State private var firstWord: Double?
-    @State private var cachedAudioURLs: [URL] = []
-    @State private var selectedAudio: URL?
     @State private var endObserver: NSObjectProtocol?
 
     // TTS generation params
-    @State private var cfgValue        = SimpleTTSGenerationOptions.fastBalanced.cfgValue
-    @State private var inferenceSteps  = Double(SimpleTTSGenerationOptions.fastBalanced.inferenceTimesteps)
-    @State private var maxTokens       = Double(SimpleTTSGenerationOptions.fastBalanced.maxTokens)
-    @State private var warmupPatches   = Double(SimpleTTSGenerationOptions.fastBalanced.warmupPatches)
+    @State private var cfgValue        = SimpleTTSGenerationOptions.museTalkDefault.cfgValue
+    @State private var inferenceSteps  = Double(SimpleTTSGenerationOptions.museTalkDefault.inferenceTimesteps)
+    @State private var maxTokens       = Double(SimpleTTSGenerationOptions.museTalkDefault.maxTokens)
+    @State private var warmupPatches   = Double(SimpleTTSGenerationOptions.museTalkDefault.warmupPatches)
 
     // Timing
     @State private var lastFirstWord: Double?
@@ -45,10 +44,17 @@ struct MuseTalkView: View {
 
     // Video call UI state
     @State private var showSettings = false
+    @State private var micOn = true
+    @State private var cameraOn = false
+    @State private var pipOffset: CGSize = .zero
+    @GestureState private var pipDragTranslation: CGSize = .zero
 
     // Idle loop
     @State private var idleLoopPlayer: AVQueuePlayer?
     @State private var idleLooper: AVPlayerLooper?
+    @State private var currentIdleLoopURL: URL?
+    @State private var idleRotationTask: Task<Void, Never>?
+    @State private var idleReadyObserver: NSKeyValueObservation?
 
     private var projectRoot: URL {
         URL(fileURLWithPath: #file)
@@ -56,9 +62,6 @@ struct MuseTalkView: View {
             .deletingLastPathComponent()
     }
     private var cacheDir: URL { projectRoot.appendingPathComponent("outputs") }
-    private func sentenceAudioURL(_ i: Int) -> URL {
-        cacheDir.appendingPathComponent("last_tts_\(i).wav")
-    }
 
     private func sourceImageData() throws -> Data {
         guard let img = NSImage(named: "Interviewer"),
@@ -112,6 +115,18 @@ struct MuseTalkView: View {
                         selfViewPiP
                             .padding(.trailing, 16)
                             .padding(.bottom, 14)
+                            .offset(x: pipOffset.width + pipDragTranslation.width,
+                                    y: pipOffset.height + pipDragTranslation.height)
+                            .gesture(
+                                DragGesture()
+                                    .updating($pipDragTranslation) { value, state, _ in
+                                        state = value.translation
+                                    }
+                                    .onEnded { value in
+                                        pipOffset.width += value.translation.width
+                                        pipOffset.height += value.translation.height
+                                    }
+                            )
                     }
                 }
             }
@@ -147,8 +162,7 @@ struct MuseTalkView: View {
         .animation(.easeInOut(duration: 0.22), value: showSettings)
         .task {
             portrait = NSImage(named: "Interviewer").map { cappedImage($0, maxSide: 384) }
-            refreshCachedAudio()
-            loadIdleLoop()
+            startInitialIdleLoop()
             await checkServer()
         }
     }
@@ -199,50 +213,17 @@ struct MuseTalkView: View {
                 previewPlaceholder
             }
 
-            // Talking video overlaid on top when active
+            // Talking video overlaid on top when active — cross-fades in/out
             if isTalking, let player {
                 FullScreenVideoPlayer(player: player)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.opacity)
             }
 
-            // Thinking overlay on top of whatever is showing (self-guards on isRendering)
-            thinkingOverlay
-
-            // Status badge — top-right
-            if let badge = statusBadge {
-                VStack {
-                    HStack {
-                        Spacer()
-                        HStack(spacing: 5) {
-                            if badge.1 == .orange {
-                                ProgressView().controlSize(.mini).scaleEffect(0.7)
-                            } else {
-                                Circle().fill(badge.1).frame(width: 5, height: 5)
-                            }
-                            Text(badge.0)
-                                .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                                .foregroundColor(badge.1)
-                                .tracking(0.5)
-                        }
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(.black.opacity(0.65), in: Capsule())
-                        .padding(14)
-                    }
-                    Spacer()
-                }
-            }
-
-            // Render info — bottom center
-            if let info = renderInfo {
-                VStack {
-                    Spacer()
-                    Text(info)
-                        .font(.system(size: 9, design: .monospaced))
-                        .foregroundColor(.green.opacity(0.85))
-                        .padding(.horizontal, 12).padding(.vertical, 5)
-                        .background(.black.opacity(0.55), in: Capsule())
-                        .padding(.bottom, 14)
-                }
+            // Loading spinner — centered, shown while generating/rendering
+            if isRendering {
+                ProgressView()
+                    .controlSize(.large)
             }
 
             // Interviewer name tag — bottom-left
@@ -250,10 +231,10 @@ struct MuseTalkView: View {
                 Spacer()
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Alex Chen")
+                        Text("Gemala")
                             .font(.system(size: 13, weight: .semibold))
                             .foregroundColor(.white)
-                        Text("Senior Engineering Manager")
+                        Text("AI/ML Engineer Manager")
                             .font(.system(size: 10))
                             .foregroundColor(.white.opacity(0.6))
                     }
@@ -266,6 +247,7 @@ struct MuseTalkView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeInOut(duration: 0.4), value: isTalking)
     }
 
     // MARK: - Self-view PiP
@@ -274,16 +256,21 @@ struct MuseTalkView: View {
         ZStack {
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color(hex: "141820"))
+            CameraPreview(isActive: cameraOn)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .opacity(cameraOn ? 1 : 0)
+            if !cameraOn {
+                VStack(spacing: 5) {
+                    Image(systemName: "video.slash.fill")
+                        .font(.system(size: 20))
+                        .foregroundColor(.white.opacity(0.4))
+                    Text("Camera off")
+                        .font(.system(size: 9, weight: .medium))
+                        .foregroundColor(.white.opacity(0.3))
+                }
+            }
             RoundedRectangle(cornerRadius: 10)
                 .stroke(Color.white.opacity(0.12), lineWidth: 1)
-            VStack(spacing: 5) {
-                Image(systemName: "person.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.white.opacity(0.25))
-                Text("You")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundColor(.white.opacity(0.3))
-            }
         }
         .frame(width: 112, height: 82)
         .shadow(color: .black.opacity(0.5), radius: 8, y: 4)
@@ -294,8 +281,18 @@ struct MuseTalkView: View {
     private var callControlBar: some View {
         HStack(spacing: 0) {
             HStack(spacing: 14) {
-                callControlButton(icon: "mic.fill", label: "Mute", tint: .white, action: {})
-                callControlButton(icon: "video.fill", label: "Camera", tint: .white, action: {})
+                callControlButton(
+                    icon: micOn ? "mic.fill" : "mic.slash.fill",
+                    label: micOn ? "Mute" : "Unmute",
+                    tint: micOn ? .white : .red,
+                    highlighted: !micOn
+                ) { micOn.toggle() }
+                callControlButton(
+                    icon: cameraOn ? "video.fill" : "video.slash.fill",
+                    label: "Camera",
+                    tint: cameraOn ? .white : .red,
+                    highlighted: !cameraOn
+                ) { cameraOn.toggle() }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -304,7 +301,7 @@ struct MuseTalkView: View {
                 HStack(spacing: 8) {
                     Image(systemName: isRendering ? "hourglass" : "play.fill")
                         .font(.system(size: 13, weight: .semibold))
-                    Text(isRendering ? "Working…" : "Speak")
+                    Text(isRendering ? "Working…" : "Start")
                         .font(.system(size: 13, weight: .semibold))
                 }
                 .padding(.horizontal, 24).padding(.vertical, 11)
@@ -339,7 +336,7 @@ struct MuseTalkView: View {
                             .foregroundColor(.white)
                             .frame(width: 44, height: 44)
                             .background(Color.red, in: Circle())
-                        Text("End")
+                        Text("Leave")
                             .font(.system(size: 9, weight: .medium))
                             .foregroundColor(.secondary)
                     }
@@ -530,44 +527,6 @@ struct MuseTalkView: View {
                         .buttonStyle(.plain)
                         .disabled(serverStatus != .online || isRendering)
 
-                        if !cachedAudioURLs.isEmpty {
-                            Picker("", selection: Binding(
-                                get: { selectedAudio ?? cachedAudioURLs[0] },
-                                set: { selectedAudio = $0 }
-                            )) {
-                                ForEach(cachedAudioURLs, id: \.self) { url in
-                                    Text(url.lastPathComponent).tag(url)
-                                }
-                            }
-                            .labelsHidden()
-                            .pickerStyle(.menu)
-                            .font(.system(size: 11, design: .monospaced))
-                            .padding(.horizontal, 10).padding(.vertical, 8)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.09)))
-                        }
-
-                        Button(action: { Task { await lipSyncSelectedAudio() } }) {
-                            HStack {
-                                Image(systemName: "arrow.clockwise")
-                                Text(selectedAudio.map { $0.lastPathComponent } ?? "Lip-sync audio")
-                                    .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 9)
-                            .background(Color.white.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
-                            .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.09)))
-                            .foregroundColor(
-                                (serverStatus == .online && selectedAudio != nil && !isRendering)
-                                    ? .indigo : .secondary
-                            )
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(serverStatus != .online || selectedAudio == nil || isRendering)
-
                         if let info = renderInfo {
                             Text(info)
                                 .font(.system(size: 10, design: .monospaced))
@@ -577,36 +536,6 @@ struct MuseTalkView: View {
                 }
                 .padding(20)
             }
-        }
-    }
-
-    // MARK: - Shared overlays (reused by mainVideoArea)
-
-    @ViewBuilder
-    private var thinkingOverlay: some View {
-        if isRendering {
-            ZStack {
-                Color.black.opacity(0.22)
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text("thinking…")
-                        .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.9))
-                }
-                .padding(.horizontal, 12).padding(.vertical, 7)
-                .background(.black.opacity(0.45), in: Capsule())
-            }
-            .clipShape(RoundedRectangle(cornerRadius: 0))
-        }
-    }
-
-    private var statusBadge: (String, Color)? {
-        switch renderState {
-        case .idle:            return nil
-        case .generatingAudio: return ("GENERATING", .orange)
-        case .rendering:       return ("RENDERING", .orange)
-        case .ready:           return ("READY", .green)
-        case .error:           return ("ERROR", .red)
         }
     }
 
@@ -690,8 +619,6 @@ struct MuseTalkView: View {
 
     private func generateAndLipSync() async {
         beginSession(label: "TTS+render")
-        try? FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        clearCachedAudio()
 
         // ponytail: full text in one TTS call so VoxCPM2 maintains a single speaker
         // identity throughout — per-sentence calls produce voice drift across generations.
@@ -703,17 +630,6 @@ struct MuseTalkView: View {
             finishSession()
             return
         }
-        try? wav.write(to: sentenceAudioURL(0))
-        do { try await streamLipSync(audio: wav) }
-        catch { renderState = .error(error.localizedDescription); return }
-        refreshCachedAudio()
-        finishSession()
-    }
-
-    private func lipSyncSelectedAudio() async {
-        guard let url = selectedAudio, let wav = try? Data(contentsOf: url) else { return }
-        beginSession(label: "no TTS")
-        renderState = .rendering
         do { try await streamLipSync(audio: wav) }
         catch { renderState = .error(error.localizedDescription); return }
         finishSession()
@@ -733,11 +649,23 @@ struct MuseTalkView: View {
         sessionStart = Date()
         renderState = .generatingAudio
         sessionLabel = label
+
+        // ponytail: idle loops are ~8s — if TTS/render runs long, cycle to a
+        // different loop so the wait doesn't visibly repeat the same clip.
+        idleRotationTask?.cancel()
+        idleRotationTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                guard !Task.isCancelled else { return }
+                switchIdleLoop()
+            }
+        }
     }
 
     @State private var sessionLabel = ""
 
     private func finishSession() {
+        idleRotationTask?.cancel()
         generationDone = true
         let total = Date().timeIntervalSince(sessionStart)
         lastFirstWord = firstWord
@@ -745,7 +673,15 @@ struct MuseTalkView: View {
         let fw = firstWord.map { String(format: "first word %.1fs · ", $0) } ?? ""
         renderInfo = "\(sessionLabel) · \(fw)" + String(format: "done %.1fs", total)
         renderState = startedPlayback ? .ready : .error("no video produced")
-        if startedPlayback, player?.currentItem == nil { isTalking = false }
+        if startedPlayback, player?.currentItem == nil { returnToIdle() }
+    }
+
+    /// Leaves the talking state and always hands the screen back to an idle
+    /// loop — the two call sites (playback drains before generation finishes,
+    /// or generation finishes before playback drains) must never skip this.
+    private func returnToIdle() {
+        isTalking = false
+        switchIdleLoop()
     }
 
     private func fetchTTSWav(text: String, emotion: String,
@@ -828,6 +764,7 @@ struct MuseTalkView: View {
 
     private func enqueue(_ item: AVPlayerItem) {
         if !startedPlayback {
+            idleRotationTask?.cancel()
             let q = AVQueuePlayer(playerItem: item)
             q.actionAtItemEnd = .advance
             player = q
@@ -839,9 +776,7 @@ struct MuseTalkView: View {
                 forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main
             ) { _ in
                 if generationDone, (player?.items().count ?? 0) <= 1 {
-                    isTalking = false
-                    // Hand back to the idle loop
-                    idleLoopPlayer?.play()
+                    returnToIdle()
                 }
             }
             q.play()
@@ -852,15 +787,58 @@ struct MuseTalkView: View {
 
     // MARK: - Idle loop
 
-    private func loadIdleLoop() {
-        let url = projectRoot.appendingPathComponent("outputs/idle_loop.mp4")
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
+    private func idleLoopURLs() -> [URL] {
+        let dir = projectRoot.appendingPathComponent("outputs")
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        return files
+            .filter { $0.lastPathComponent.hasPrefix("idle_loop") && $0.pathExtension == "mp4" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    /// Swaps the idle background to a (weighted-random) loop file.
+    private func switchIdleLoop() {
+        let candidates = idleLoopURLs()
+        guard !candidates.isEmpty else { return }
+        // ponytail: idle_loop2 is favored 6:1 over the others — bump the count if it needs more/less airtime.
+        let weighted = candidates.flatMap { url in
+            Array(repeating: url, count: url.lastPathComponent.contains("loop2") ? 6 : 1)
+        }
+        guard let next = weighted.randomElement() else { return }
+        guard next != currentIdleLoopURL || idleLoopPlayer == nil else { return }
+        playIdleLoop(next)
+    }
+
+    /// Starts the very first idle loop, preferring idle_loop2 over the weighted-random pick.
+    private func startInitialIdleLoop() {
+        if let loop2 = idleLoopURLs().first(where: { $0.lastPathComponent.contains("loop2") }) {
+            playIdleLoop(loop2)
+        } else {
+            switchIdleLoop()
+        }
+    }
+
+    /// Builds the next idle player off-screen and only swaps it in once it has
+    /// a decoded frame ready — otherwise the layer briefly shows the dark
+    /// background behind it while the new video loads.
+    private func playIdleLoop(_ url: URL) {
         let player = AVQueuePlayer()
         player.isMuted = true  // silence — visual only
         let template = AVPlayerItem(url: url)
-        idleLooper = AVPlayerLooper(player: player, templateItem: template)
-        idleLoopPlayer = player
-        player.play()
+        let looper = AVPlayerLooper(player: player, templateItem: template)
+
+        // ponytail: observe the player's actual enqueued item, not the template —
+        // the looper plays copies of the template, so template.status can stay
+        // .unknown forever and the swap-in never fires (static portrait instead).
+        idleReadyObserver?.invalidate()
+        idleReadyObserver = player.observe(\.currentItem?.status, options: [.new, .initial]) { p, _ in
+            guard p.currentItem?.status == .readyToPlay else { return }
+            DispatchQueue.main.async {
+                currentIdleLoopURL = url
+                idleLooper = looper
+                idleLoopPlayer = player
+                player.play()
+            }
+        }
     }
 
     // MARK: - Helpers
@@ -903,24 +881,6 @@ struct MuseTalkView: View {
             }
         }
         return merged.isEmpty ? [text] : merged
-    }
-
-    private func clearCachedAudio() {
-        // ponytail: only delete generated files, leave user's other wavs in outputs/
-        let toDelete = cachedAudioURLs.filter { $0.lastPathComponent.hasPrefix("last_tts_") }
-        for url in toDelete { try? FileManager.default.removeItem(at: url) }
-        cachedAudioURLs = cachedAudioURLs.filter { !$0.lastPathComponent.hasPrefix("last_tts_") }
-        if !cachedAudioURLs.contains(where: { $0 == selectedAudio }) { selectedAudio = cachedAudioURLs.first }
-    }
-
-    private func refreshCachedAudio() {
-        let files = (try? FileManager.default.contentsOfDirectory(at: cacheDir, includingPropertiesForKeys: nil)) ?? []
-        cachedAudioURLs = files
-            .filter { $0.pathExtension == "wav" }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        if selectedAudio == nil || !cachedAudioURLs.contains(where: { $0 == selectedAudio }) {
-            selectedAudio = cachedAudioURLs.first
-        }
     }
 
     private func err(_ msg: String) -> NSError {
@@ -1043,5 +1003,77 @@ final class PlayerLayerView: NSView {
     override func layout() {
         super.layout()
         playerLayer.frame = bounds
+    }
+}
+
+// MARK: - Live Camera Preview
+
+struct CameraPreview: NSViewRepresentable {
+    let isActive: Bool
+
+    func makeNSView(context: Context) -> CameraPreviewView {
+        let view = CameraPreviewView()
+        if isActive { view.start() }
+        return view
+    }
+
+    func updateNSView(_ nsView: CameraPreviewView, context: Context) {
+        isActive ? nsView.start() : nsView.stop()
+    }
+
+    static func dismantleNSView(_ nsView: CameraPreviewView, coordinator: ()) {
+        nsView.stop()
+    }
+}
+
+final class CameraPreviewView: NSView {
+    private let session = AVCaptureSession()
+    private let previewLayer = AVCaptureVideoPreviewLayer()
+    private var configured = false
+
+    override init(frame: NSRect) {
+        super.init(frame: frame)
+        wantsLayer = true
+        previewLayer.videoGravity = .resizeAspectFill
+        previewLayer.session = session
+        layer?.addSublayer(previewLayer)
+    }
+
+    required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        previewLayer.frame = bounds
+    }
+
+    func start() {
+        AVCaptureDevice.requestAccess(for: .video) { [weak self] granted in
+            guard granted else { return }
+            DispatchQueue.main.async { self?.beginRunning() }
+        }
+    }
+
+    func stop() {
+        guard session.isRunning else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [session] in session.stopRunning() }
+    }
+
+    private func beginRunning() {
+        if !configured {
+            configured = true
+            guard let device = AVCaptureDevice.default(for: .video),
+                  let input = try? AVCaptureDeviceInput(device: device),
+                  session.canAddInput(input) else { return }
+            session.beginConfiguration()
+            session.sessionPreset = .medium
+            session.addInput(input)
+            if let connection = previewLayer.connection, connection.isVideoMirroringSupported {
+                connection.automaticallyAdjustsVideoMirroring = false
+                connection.isVideoMirrored = true
+            }
+            session.commitConfiguration()
+        }
+        guard !session.isRunning else { return }
+        DispatchQueue.global(qos: .userInitiated).async { [session] in session.startRunning() }
     }
 }

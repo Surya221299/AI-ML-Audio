@@ -21,6 +21,14 @@ struct SimpleTTSGenerationOptions: Equatable {
         maxTokens: 2000,
         warmupPatches: 0
     )
+
+    // Mirrors server_mlx.py TTS_CONFIG (the /speak endpoint MuseTalk actually uses).
+    static let museTalkDefault = SimpleTTSGenerationOptions(
+        cfgValue: 2.5,
+        inferenceTimesteps: 6,
+        maxTokens: 2000,
+        warmupPatches: 2
+    )
 }
 
 @MainActor
