@@ -8,13 +8,13 @@ ROOT="$(pwd)"
 
 echo "==> [1/4] Creating MLX TTS environment (voxcpm-env)..."
 python3 -m venv envs/voxcpm-env
-envs/voxcpm-env/bin/pip install -q --upgrade pip
+envs/voxcpm-env/bin/pip install -q --upgrade pip setuptools wheel
 envs/voxcpm-env/bin/pip install -q \
   mlx-audio fastapi uvicorn soundfile numpy pydantic
 
 echo "==> [2/4] Creating MuseTalk environment (musetalk-env)..."
 python3 -m venv envs/musetalk-env
-envs/musetalk-env/bin/pip install -q --upgrade pip
+envs/musetalk-env/bin/pip install -q --upgrade pip setuptools wheel
 envs/musetalk-env/bin/pip install -q -r MuseTalk/requirements.txt
 envs/musetalk-env/bin/pip install -q coremltools torch torchvision onnxruntime
 
