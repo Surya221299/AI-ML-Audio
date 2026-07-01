@@ -1,0 +1,30 @@
+# MuseTalk — clone separately via setup.sh
+MuseTalk/
+
+# Models & weights — download via setup.sh
+models/
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.onnx
+
+# Virtual environments
+envs/
+
+# Generated outputs
+outputs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.python-version
+
+# macOS
+.DS_Store
+
+# Xcode derived data (if any ends up here)
+*.xcuserstate
+xcuserdata/
