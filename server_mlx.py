@@ -40,7 +40,7 @@ MODEL_CANDIDATES = [
 # ── Tunable generation config (can be changed at runtime via /config) ─────────
 TTS_CONFIG = {
     "cfg_value":            2.5,     # VoxCPM2 minimum is 2.0; 2.5 reduces voice drift and robotic artifacts
-    "inference_timesteps":  10,      # default for VoxCPM2; lower to 5 for faster with minor quality loss
+    "inference_timesteps":  6,       # lowered from 10 for latency; still above stream's 4
     "max_tokens":           2000,    # default for VoxCPM2; allows longer utterances without truncation
     "warmup_patches":       2,       # silent patches that stabilise voice state before emitting audio
 }
