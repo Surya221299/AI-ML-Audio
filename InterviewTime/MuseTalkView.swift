@@ -161,7 +161,7 @@ struct MuseTalkView: View {
         .animation(.easeInOut(duration: 0.22), value: showSettings)
         .task {
             portrait = NSImage(named: "Interviewer").map { cappedImage($0, maxSide: 384) }
-            switchIdleLoop()
+            startInitialIdleLoop()
             await checkServer()
         }
     }
@@ -798,11 +798,23 @@ struct MuseTalkView: View {
         }
         guard let next = weighted.randomElement() else { return }
         guard next != currentIdleLoopURL || idleLoopPlayer == nil else { return }
+        playIdleLoop(next)
+    }
 
-        currentIdleLoopURL = next
+    /// Starts the very first idle loop, preferring idle_loop2 over the weighted-random pick.
+    private func startInitialIdleLoop() {
+        if let loop2 = idleLoopURLs().first(where: { $0.lastPathComponent.contains("loop2") }) {
+            playIdleLoop(loop2)
+        } else {
+            switchIdleLoop()
+        }
+    }
+
+    private func playIdleLoop(_ url: URL) {
+        currentIdleLoopURL = url
         let player = AVQueuePlayer()
         player.isMuted = true  // silence — visual only
-        let template = AVPlayerItem(url: next)
+        let template = AVPlayerItem(url: url)
         idleLooper = AVPlayerLooper(player: player, templateItem: template)
         idleLoopPlayer = player
         player.play()
