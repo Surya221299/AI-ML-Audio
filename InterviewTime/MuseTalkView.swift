@@ -51,6 +51,8 @@ struct MuseTalkView: View {
 
     // Idle loop
     @State private var idleLoopPlayer: AVQueuePlayer?
+    @State private var idleLoopVisible = false
+    @State private var previousIdleLoopPlayer: AVQueuePlayer?
     @State private var idleLooper: AVPlayerLooper?
     @State private var currentIdleLoopURL: URL?
     @State private var idleRotationTask: Task<Void, Never>?
@@ -200,9 +202,17 @@ struct MuseTalkView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             // Background: idle loop or portrait always visible (prevents black flicker between segments)
+            // Outgoing idle player stays underneath, fading out, while the incoming one fades in on top —
+            // otherwise switching between idle_loop1/2 is an instant hard cut.
+            if let previousIdleLoopPlayer {
+                FullScreenVideoPlayer(player: previousIdleLoopPlayer)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             if let idleLoopPlayer {
                 FullScreenVideoPlayer(player: idleLoopPlayer)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(idleLoopVisible ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.3), value: idleLoopVisible)
             } else if let portrait {
                 Image(nsImage: portrait)
                     .resizable()
@@ -247,7 +257,7 @@ struct MuseTalkView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(.easeInOut(duration: 0.4), value: isTalking)
+        .animation(.easeInOut(duration: 0.3), value: isTalking)
     }
 
     // MARK: - Self-view PiP
@@ -681,6 +691,10 @@ struct MuseTalkView: View {
     /// or generation finishes before playback drains) must never skip this.
     private func returnToIdle() {
         isTalking = false
+        // the idle player keeps running in the background while hidden behind the
+        // talking video, so if switchIdleLoop() below keeps the same clip (the
+        // common case) it would reappear mid-loop instead of at frame one
+        idleLoopPlayer?.seek(to: .zero)
         switchIdleLoop()
     }
 
@@ -774,7 +788,14 @@ struct MuseTalkView: View {
             renderState = .ready
             endObserver = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main
-            ) { _ in
+            ) { note in
+                // object: nil means this also fires for the idle-loop background
+                // repeating underneath — only react to our own talking segments
+                // (named seg_*.mp4) or an unrelated idle-loop repeat can trigger
+                // returnToIdle() mid-sentence instead of at the real end.
+                guard let endedItem = note.object as? AVPlayerItem,
+                      let url = (endedItem.asset as? AVURLAsset)?.url,
+                      url.lastPathComponent.hasPrefix("seg_") else { return }
                 if generationDone, (player?.items().count ?? 0) <= 1 {
                     returnToIdle()
                 }
@@ -833,10 +854,18 @@ struct MuseTalkView: View {
         idleReadyObserver = player.observe(\.currentItem?.status, options: [.new, .initial]) { p, _ in
             guard p.currentItem?.status == .readyToPlay else { return }
             DispatchQueue.main.async {
+                previousIdleLoopPlayer = idleLoopPlayer
                 currentIdleLoopURL = url
                 idleLooper = looper
+                idleLoopVisible = false
                 idleLoopPlayer = player
                 player.play()
+                // flip on the next tick so the opacity animation actually fades in
+                // rather than snapping straight to 1 alongside the player swap above
+                DispatchQueue.main.async { idleLoopVisible = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    previousIdleLoopPlayer = nil
+                }
             }
         }
     }

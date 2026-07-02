@@ -33,13 +33,31 @@ DWPOSE_DIR = os.path.join(MODELS_DIR, "dwpose_onnx")
 # real-time. 768 on the long side keeps the face crisp and render sustainable.
 MAX_SIDE = 768
 
+# ponytail: lock every source portrait to 16:9 so the rendered talking video
+# always matches the idle_loop*.mp4 aspect ratio — the app cross-fades both
+# with resizeAspectFill into the same frame, so any aspect mismatch shows up
+# as a scale jump between idle and talking.
+TARGET_ASPECT = 16 / 9
+
+
+def _crop_to_aspect(img, aspect):
+    h, w = img.shape[:2]
+    if w / h > aspect:
+        new_w = int(h * aspect) & ~1
+        x0 = (w - new_w) // 2
+        return img[:, x0:x0 + new_w]
+    new_h = int(w / aspect) & ~1
+    y0 = (h - new_h) // 2
+    return img[y0:y0 + new_h, :]
+
 
 def _cap_size(img):
+    img = _crop_to_aspect(img, TARGET_ASPECT)
     h, w = img.shape[:2]
     longest = max(h, w)
     scale = MAX_SIDE / longest if longest > MAX_SIDE else 1.0
     nw = int(round(w * scale)) & ~1   # force even — libx264 requires it
-    nh = int(round(h * scale)) & ~1
+    nh = int(round(nw / TARGET_ASPECT)) & ~1  # derive from nw so ratio stays exact
     if (nw, nh) == (w, h):
         return img
     return cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
