@@ -23,7 +23,15 @@ final class InterviewPrep: ObservableObject {
         case failed(String)
     }
 
+    struct PrepStep: Identifiable, Equatable {
+        let id = UUID()
+        let title: String
+        var status: Status
+        enum Status { case pending, active, done }
+    }
+
     @Published var stage: Stage = .idle
+    @Published var steps: [PrepStep] = []
     @Published var questions: [String] = []
     @Published var jobDescription = ""
 
@@ -46,27 +54,60 @@ final class InterviewPrep: ObservableObject {
     var closingDir: URL { outputsRoot.appendingPathComponent("closing") }
     func questionDir(_ i: Int) -> URL { outputsRoot.appendingPathComponent("q\(i)") }
 
+    // Kategori jawaban tanya-balik (pre-rendered)
+    let closingCategories = ["posisi", "perusahaan", "benefit", "proses"]
+    func answerDir(_ cat: String) -> URL { outputsRoot.appendingPathComponent("answer_\(cat)") }
+
     var isReady: Bool { if case .ready = stage { return true }; return false }
     var isWorking: Bool {
         switch stage { case .idle, .ready, .failed: return false; default: return true }
+    }
+
+    // MARK: - Step tracking
+
+    private func initSteps(questionCount: Int) {
+        var list: [PrepStep] = []
+        list.append(.init(title: "Memuat model suara", status: .pending))
+        list.append(.init(title: "Menganalisis job description", status: .pending))
+        list.append(.init(title: "Menyiapkan pembuka", status: .pending))
+        for i in 0..<questionCount {
+            list.append(.init(title: "Menyiapkan pertanyaan \(i+1)", status: .pending))
+        }
+        list.append(.init(title: "Menyiapkan penutup", status: .pending))
+        list.append(.init(title: "Menyiapkan jawaban: posisi", status: .pending))
+        list.append(.init(title: "Menyiapkan jawaban: perusahaan", status: .pending))
+        list.append(.init(title: "Menyiapkan jawaban: benefit", status: .pending))
+        list.append(.init(title: "Menyiapkan jawaban: proses", status: .pending))
+        steps = list
+    }
+
+    private func markStep(_ index: Int, _ status: PrepStep.Status) {
+        guard steps.indices.contains(index) else { return }
+        steps[index].status = status
     }
 
     // MARK: - Persiapan lengkap
 
     func prepare(jobDescription: String) async {
         self.jobDescription = jobDescription
-        // 1. STT
+        initSteps(questionCount: numQuestions)
+
+        // 1. STT — step 0
+        markStep(0, .active)
         if !whisper.isReady {
             stage = .loadingSTT
             await whisper.loadModel()
             if !whisper.isReady { stage = .failed("STT gagal: \(whisper.status)"); return }
         }
+        markStep(0, .done)
 
-        // 2. Generate pertanyaan
+        // 2. Generate pertanyaan — step 1
+        markStep(1, .active)
         stage = .analyzing
         let qs = await generateQuestions(jobDescription: jobDescription)
         guard qs.count == numQuestions else { stage = .failed("Gagal membuat pertanyaan"); return }
         questions = qs
+        markStep(1, .done)
 
         // 3. Render semua ke folder.
         //    Pertanyaan SELALU dirender ulang (beda JD = beda pertanyaan),
@@ -75,28 +116,119 @@ final class InterviewPrep: ObservableObject {
             try? FileManager.default.removeItem(at: questionDir(i))
         }
         do {
+            markStep(2, .active)
             if loadSaved(openingDir) == nil {
                 stage = .rendering("Menyiapkan opening…")
                 let wav = try await fetchTTSWav(text: openingText)
                 _ = try await renderToFiles(audio: wav, dir: openingDir)
             }
+            markStep(2, .done)
             for (i, q) in qs.enumerated() {
+                markStep(3 + i, .active)
                 if loadSaved(questionDir(i)) == nil {
                     stage = .rendering("Menyiapkan pertanyaan \(i+1) dari \(qs.count)…")
                     let wav = try await fetchTTSWav(text: q)
                     _ = try await renderToFiles(audio: wav, dir: questionDir(i))
                 }
+                markStep(3 + i, .done)
             }
+            let closingStep = 3 + numQuestions
+            markStep(closingStep, .active)
             if loadSaved(closingDir) == nil {
                 stage = .rendering("Menyiapkan closing…")
                 let wav = try await fetchTTSWav(text: closingText)
                 _ = try await renderToFiles(audio: wav, dir: closingDir)
             }
+            markStep(closingStep, .done)
         } catch {
             stage = .failed("Gagal render: \(error.localizedDescription)"); return
         }
 
+        // 4. Render jawaban tanya-balik (posisi, perusahaan, benefit, proses)
+        //    Selalu render ulang per JD → hapus cache lama.
+        for cat in closingCategories {
+            try? FileManager.default.removeItem(at: answerDir(cat))
+        }
+        do {
+            let answers = await generateClosingAnswers(jobDescription: jobDescription)
+            let baseStep = 4 + numQuestions
+            for (ci, cat) in closingCategories.enumerated() {
+                markStep(baseStep + ci, .active)
+                stage = .rendering("Menyiapkan jawaban: \(cat)…")
+                let text = answers[cat] ?? defaultAnswer(cat)
+                let wav = try await fetchTTSWav(text: text)
+                _ = try await renderToFiles(audio: wav, dir: answerDir(cat))
+                markStep(baseStep + ci, .done)
+            }
+        } catch {
+            stage = .failed("Gagal render jawaban: \(error.localizedDescription)"); return
+        }
+
         stage = .ready
+    }
+
+    // MARK: - Jawaban tanya-balik (pre-render)
+
+    /// Generate 4 jawaban tanya-balik sekaligus dari JD (satu panggilan LLM).
+    private func generateClosingAnswers(jobDescription: String) async -> [String: String] {
+        let system = """
+        Kamu HRD/interviewer profesional yang MEWAKILI perusahaan. Berdasarkan job description, tulis
+        jawaban untuk 4 pertanyaan yang MUNGKIN ditanyakan kandidat di akhir interview.
+        PERSPEKTIF WAJIB: gunakan "kami/perusahaan kami" untuk pihakmu, dan "Anda" untuk kandidat.
+        Contoh benar: "Di perusahaan kami, Anda akan mendapat kesempatan berkembang..."
+        JANGAN tertukar (jangan sebut kandidat "kami" atau perusahaan "Anda").
+        Tiap jawaban 2-3 kalimat, Bahasa Indonesia, hangat & informatif, JANGAN balik bertanya.
+        Kategori:
+        - posisi: tentang peran, tanggung jawab, ekspektasi di posisi ini.
+        - perusahaan: tentang budaya kerja, tim, lingkungan.
+        - benefit: tentang gaji/tunjangan/asuransi/cuti/pengembangan diri (jawab umum bila tak disebut JD).
+        - proses: tentang tahap selanjutnya & kapan hasil interview diinformasikan.
+        Output HANYA JSON: {"posisi":"...","perusahaan":"...","benefit":"...","proses":"..."}
+        """
+        guard let json = await ollama.chatJSON(
+                model: llmModel,
+                messages: [["role": "system", "content": system],
+                           ["role": "user", "content": "JOB DESCRIPTION:\n\(jobDescription)"]],
+                temperature: 0.5, numPredict: 700) else { return [:] }
+        var out: [String: String] = [:]
+        for cat in closingCategories {
+            if let t = json[cat]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+                out[cat] = t
+            }
+        }
+        return out
+    }
+
+    private func defaultAnswer(_ cat: String) -> String {
+        switch cat {
+        case "posisi":     return "Posisi ini fokus pada tanggung jawab inti sesuai deskripsi pekerjaan, dan kami mencari kandidat yang antusias berkembang bersama tim."
+        case "perusahaan": return "Kami menjunjung budaya kerja kolaboratif, saling mendukung, dan terbuka pada ide baru dari setiap anggota tim."
+        case "benefit":    return "Kami menyediakan paket kompensasi yang kompetitif beserta tunjangan kesehatan dan kesempatan pengembangan diri."
+        case "proses":     return "Setelah sesi ini, tim kami akan meninjau dan menghubungi Anda mengenai tahap berikutnya dalam beberapa hari ke depan."
+        default:           return "Terima kasih atas pertanyaannya."
+        }
+    }
+
+    /// Classify pertanyaan kandidat ke salah satu kategori.
+    func classifyClosingCategory(_ question: String) async -> String {
+        let system = """
+        Klasifikasikan pertanyaan kandidat ke SATU kategori: posisi, perusahaan, benefit, atau proses.
+        - posisi: peran, tugas, tanggung jawab, skill, tech stack.
+        - perusahaan: budaya, tim, lingkungan kerja, nilai perusahaan.
+        - benefit: gaji, tunjangan, asuransi, cuti, remote, jam kerja, fasilitas.
+        - proses: tahap selanjutnya, kapan pengumuman, timeline rekrutmen.
+        Jawab HANYA satu kata dari empat itu.
+        """
+        do {
+            let (content, _) = try await ollama.chat(
+                model: llmModel,
+                messages: [["role": "system", "content": system],
+                           ["role": "user", "content": question]],
+                temperature: 0.0, numPredict: 10)
+            let c = content.lowercased()
+            for cat in closingCategories where c.contains(cat) { return cat }
+            return "proses"   // default terdekat kalau tidak jelas
+        } catch { return "proses" }
     }
 
     // MARK: - LLM generate pertanyaan
@@ -183,6 +315,46 @@ final class InterviewPrep: ObservableObject {
             return content.trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased().hasPrefix("decline")
         } catch { return false }
+    }
+
+    let maxClosingQA = 3
+
+    /// Interviewer menjawab pertanyaan balik kandidat (teks).
+    func generateClosingAnswer(candidateQuestion: String, remaining: Int) async -> String {
+        let isLast = remaining <= 1
+        let tail = isLast
+            ? "Ini kesempatan terakhir. Setelah menjawab, tutup dengan kalimat hangat dan nyatakan interview selesai."
+            : "Setelah menjawab, tanyakan singkat apakah ada lagi yang ingin ditanyakan. JANGAN sebutkan angka/jumlah pertanyaan tersisa."
+        let system = """
+        Anda "Gemala", AI Interviewer profesional di perusahaan teknologi. Sesi interview sudah selesai
+        dan kandidat sedang bertanya kepada Anda tentang posisi/perusahaan.
+        TUGAS:
+        - Jawab pertanyaan kandidat: informatif, hangat, jujur.
+        - JANGAN balik bertanya. JANGAN akhiri jawaban dengan pertanyaan.
+        - Jika di luar konteks, jawab general namun masuk akal sebagai perusahaan tech profesional.
+        - Bahasa Indonesia formal-hangat, SINGKAT 2-3 kalimat saja.
+        \(tail)
+        """
+        do {
+            let (content, _) = try await ollama.chat(
+                model: llmModel,
+                messages: [["role": "system", "content": system],
+                           ["role": "user", "content": "Pertanyaan kandidat: \(candidateQuestion)"]],
+                temperature: 0.5, numPredict: 150)
+            let t = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? "Terima kasih atas pertanyaannya! Kami akan menjelaskan lebih lanjut saat onboarding." : t
+        } catch {
+            return "Terima kasih atas pertanyaannya! Kami akan menjelaskan lebih lanjut saat onboarding."
+        }
+    }
+
+    /// Render sebuah teks jadi video+audio ke folder sementara (untuk jawaban tanya-balik).
+    func renderAnswer(text: String) async -> [URL]? {
+        let dir = outputsRoot.appendingPathComponent("closing_answer_\(UUID().uuidString.prefix(8))")
+        do {
+            let wav = try await fetchTTSWav(text: text)
+            return try await renderToFiles(audio: wav, dir: dir)
+        } catch { return nil }
     }
 
     /// Feedback keseluruhan: overall_score, recommendation, strengths, dll.
