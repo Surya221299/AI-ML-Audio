@@ -9,6 +9,78 @@
 import SwiftUI
 import AVKit
 import AVFoundation
+import Security
+
+// ponytail: plain SecItem wrapper, no framework — enough for one secret string
+enum Keychain {
+    static func set(_ value: String, account: String) {
+        let data = Data(value.utf8)
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                     kSecAttrAccount as String: account]
+        SecItemDelete(query as CFDictionary)
+        guard !value.isEmpty else { return }
+        var attrs = query
+        attrs[kSecValueData as String] = data
+        SecItemAdd(attrs as CFDictionary, nil)
+    }
+
+    static func get(account: String) -> String {
+        let query: [String: Any] = [kSecClass as String: kSecClassGenericPassword,
+                                     kSecAttrAccount as String: account,
+                                     kSecReturnData as String: true,
+                                     kSecMatchLimit as String: kSecMatchLimitOne]
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return "" }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+}
+
+// Lip-sync render server status. Always relevant regardless of TTS backend
+// (CPU or RunPod) — rendering itself always runs locally.
+struct ServerStatusBanner: View {
+    let status: MuseTalkView.ServerStatus
+    let onStart: () -> Void
+    let onViewLog: () -> Void
+    let onRetry: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Circle()
+                .fill(status.color)
+                .frame(width: 7, height: 7)
+            Text(status.label)
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .foregroundColor(status.color)
+            Spacer()
+            if status == .offline {
+                Button("Start", action: onStart)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.orange)
+                Button("Log", action: onViewLog)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            if status == .starting {
+                Button("Log", action: onViewLog)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            if status != .starting {
+                Button("Retry", action: onRetry)
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundColor(.indigo)
+            }
+        }
+        .padding(12)
+        .background(status.color.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).stroke(status.color.opacity(0.18)))
+    }
+}
 
 struct MuseTalkView: View {
     let onBack: () -> Void
@@ -38,6 +110,12 @@ struct MuseTalkView: View {
     @State private var maxTokens       = Double(SimpleTTSGenerationOptions.museTalkDefault.maxTokens)
     @State private var warmupPatches   = Double(SimpleTTSGenerationOptions.museTalkDefault.warmupPatches)
 
+    // TTS backend: local MLX server (CPU) vs a RunPod serverless VoxCPM2 endpoint
+    @AppStorage("museTalkUseCloudTTS") private var useCloudTTS = false
+    @AppStorage("museTalkRunpodEndpoint") private var runpodEndpoint = ""
+    @State private var runpodKey = ""
+    @State private var logLines: [String] = []
+
     // Timing
     @State private var lastFirstWord: Double?
     @State private var lastTotalTime: Double?
@@ -51,6 +129,8 @@ struct MuseTalkView: View {
 
     // Idle loop
     @State private var idleLoopPlayer: AVQueuePlayer?
+    @State private var idleLoopVisible = false
+    @State private var previousIdleLoopPlayer: AVQueuePlayer?
     @State private var idleLooper: AVPlayerLooper?
     @State private var currentIdleLoopURL: URL?
     @State private var idleRotationTask: Task<Void, Never>?
@@ -83,8 +163,8 @@ struct MuseTalkView: View {
             switch self {
             case .unknown:   return "Not checked"
             case .checking:  return "Checking…"
-            case .online:    return "Server online"
-            case .offline:   return "Server offline"
+            case .online:    return "Lip-sync server online"
+            case .offline:   return "Lip-sync server offline"
             case .starting:  return "Loading models… (~30s)"
             }
         }
@@ -161,9 +241,14 @@ struct MuseTalkView: View {
         .preferredColorScheme(.dark)
         .animation(.easeInOut(duration: 0.22), value: showSettings)
         .task {
+            runpodKey = Keychain.get(account: "museTalkRunpodKey")
             portrait = NSImage(named: "Interviewer").map { cappedImage($0, maxSide: 384) }
             startInitialIdleLoop()
             await checkServer()
+            if useCloudTTS { warmUpRunpod() }
+        }
+        .onChange(of: runpodKey) { _, newValue in
+            Keychain.set(newValue, account: "museTalkRunpodKey")
         }
     }
 
@@ -200,9 +285,17 @@ struct MuseTalkView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
 
             // Background: idle loop or portrait always visible (prevents black flicker between segments)
+            // Outgoing idle player stays underneath, fading out, while the incoming one fades in on top —
+            // otherwise switching between idle_loop1/2 is an instant hard cut.
+            if let previousIdleLoopPlayer {
+                FullScreenVideoPlayer(player: previousIdleLoopPlayer)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
             if let idleLoopPlayer {
                 FullScreenVideoPlayer(player: idleLoopPlayer)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(idleLoopVisible ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.3), value: idleLoopVisible)
             } else if let portrait {
                 Image(nsImage: portrait)
                     .resizable()
@@ -247,7 +340,7 @@ struct MuseTalkView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .animation(.easeInOut(duration: 0.4), value: isTalking)
+        .animation(.easeInOut(duration: 0.3), value: isTalking)
     }
 
     // MARK: - Self-view PiP
@@ -439,7 +532,75 @@ struct MuseTalkView: View {
 
                 VStack(alignment: .leading, spacing: 20) {
                     // Server status
-                    serverBanner
+                    ServerStatusBanner(
+                        status: serverStatus,
+                        onStart: { Task { @MainActor in await launchAndWaitForServer() } },
+                        onViewLog: { NSWorkspace.shared.open(cacheDir.appendingPathComponent("musetalk_server.log")) },
+                        onRetry: { Task { @MainActor in await checkServer() } }
+                    )
+
+                    Divider().background(Color.white.opacity(0.07))
+
+                    // TTS backend
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("TTS BACKEND")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .tracking(1.5)
+                        Picker("", selection: $useCloudTTS) {
+                            Text("CPU (local)").tag(false)
+                            Text("RunPod (cloud)").tag(true)
+                        }
+                        .pickerStyle(.segmented)
+                        .labelsHidden()
+                        if useCloudTTS {
+                            TextField("RunPod endpoint ID", text: $runpodEndpoint)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundColor(.white)
+                                .padding(10)
+                                .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.09)))
+                            SecureField("RunPod API key", text: $runpodKey)
+                                .font(.system(size: 12, design: .monospaced))
+                                .foregroundColor(.white)
+                                .padding(10)
+                                .background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.09)))
+                        }
+                    }
+
+                    Divider().background(Color.white.opacity(0.07))
+
+                    // Log
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("LOG")
+                            .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .tracking(1.5)
+                        ScrollViewReader { proxy in
+                            ScrollView {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    if logLines.isEmpty {
+                                        Text("—").font(.system(size: 10, design: .monospaced)).foregroundColor(.secondary)
+                                    }
+                                    ForEach(Array(logLines.enumerated()), id: \.offset) { _, line in
+                                        Text(line)
+                                            .font(.system(size: 10, design: .monospaced))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Color.clear.frame(height: 1).id("bottom")
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                            .frame(height: 120)
+                            .onChange(of: logLines.count) { _, _ in
+                                proxy.scrollTo("bottom", anchor: .bottom)
+                            }
+                        }
+                        .padding(8)
+                        .background(Color.black.opacity(0.25), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.09)))
+                    }
 
                     Divider().background(Color.white.opacity(0.07))
 
@@ -571,48 +732,6 @@ struct MuseTalkView: View {
         }
     }
 
-    // MARK: - Server banner (used inside sidebar)
-
-    private var serverBanner: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(serverStatus.color)
-                .frame(width: 7, height: 7)
-            Text(serverStatus.label)
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .foregroundColor(serverStatus.color)
-            Spacer()
-            if serverStatus == .offline {
-                Button("Start") { Task { @MainActor in await launchAndWaitForServer() } }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.orange)
-                Button("Log") {
-                    NSWorkspace.shared.open(cacheDir.appendingPathComponent("musetalk_server.log"))
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.secondary)
-            }
-            if serverStatus == .starting {
-                Button("Log") {
-                    NSWorkspace.shared.open(cacheDir.appendingPathComponent("musetalk_server.log"))
-                }
-                .buttonStyle(.plain)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.secondary)
-            }
-            if serverStatus != .starting {
-                Button("Retry") { Task { @MainActor in await checkServer() } }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.indigo)
-            }
-        }
-        .padding(12)
-        .background(serverStatus.color.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
-        .overlay(RoundedRectangle(cornerRadius: 8).stroke(serverStatus.color.opacity(0.18)))
-    }
 
 
     // MARK: - Generate + lip-sync (sentence-pipelined, idle presence)
@@ -681,30 +800,123 @@ struct MuseTalkView: View {
     /// or generation finishes before playback drains) must never skip this.
     private func returnToIdle() {
         isTalking = false
+        // the idle player keeps running in the background while hidden behind the
+        // talking video, so if switchIdleLoop() below keeps the same clip (the
+        // common case) it would reappear mid-loop instead of at frame one
+        idleLoopPlayer?.seek(to: .zero)
         switchIdleLoop()
+    }
+
+    private struct TTSPayload: Encodable {
+        let text, emotion, voice: String
+        let cfg_value: Double
+        let inference_timesteps, max_tokens, warmup_patches: Int
     }
 
     private func fetchTTSWav(text: String, emotion: String,
                               cfg: Double, steps: Int, maxTok: Int, warmup: Int) async throws -> Data {
-        struct Payload: Encodable {
-            let text, emotion, voice: String
-            let cfg_value: Double
-            let inference_timesteps, max_tokens, warmup_patches: Int
+        let payload = TTSPayload(
+            text: text, emotion: emotion, voice: "male_40s", cfg_value: cfg,
+            inference_timesteps: steps, max_tokens: maxTok, warmup_patches: warmup
+        )
+        if useCloudTTS {
+            return try await fetchRunpodWav(payload: payload)
         }
-        var req = URLRequest(url: URL(string: "http://127.0.0.1:8808/speak")!)
+
+        // Local MLX server on 8808 — returns raw WAV bytes from /speak.
+        guard let url = URL(string: "http://127.0.0.1:8808/speak") else {
+            throw err("Invalid TTS backend URL")
+        }
+        log("TTS → CPU \(url.absoluteString)")
+        var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 300
-        req.httpBody = try JSONEncoder().encode(Payload(
-            text: text, emotion: emotion, voice: "male_40s",
-            cfg_value: cfg,
-            inference_timesteps: steps, max_tokens: maxTok, warmup_patches: warmup
-        ))
+        req.httpBody = try JSONEncoder().encode(payload)
+        let t0 = Date()
         let (data, resp) = try await URLSession.shared.data(for: req)
-        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+        let elapsed = Date().timeIntervalSince(t0)
+        let status = (resp as? HTTPURLResponse)?.statusCode
+        guard status == 200 else {
+            log("TTS ✗ status \(status.map(String.init) ?? "?") after \(String(format: "%.1f", elapsed))s")
             throw err("TTS server error (is server_mlx.py running on 8808?)")
         }
+        log("TTS ✓ \(data.count) bytes in \(String(format: "%.1f", elapsed))s")
         return data
+    }
+
+    /// Fire-and-forget: enqueue a tiny job so RunPod boots a worker and loads the
+    /// 2B model into VRAM before the first real line. We don't await the result —
+    /// just triggering /run is enough to spin up the worker.
+    private func warmUpRunpod() {
+        let ep = runpodEndpoint.trimmingCharacters(in: .whitespaces)
+        let key = runpodKey.trimmingCharacters(in: .whitespaces)
+        guard !ep.isEmpty, !key.isEmpty else { return }
+        Task {
+            struct Body: Encodable { let input: [String: String] }
+            var req = URLRequest(url: URL(string: "https://api.runpod.ai/v2/\(ep)/run")!)
+            req.httpMethod = "POST"
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            req.httpBody = try? JSONEncoder().encode(Body(input: ["text": "warmup"]))
+            log("TTS → RunPod warmup")
+            _ = try? await URLSession.shared.data(for: req)
+        }
+    }
+
+    /// RunPod serverless: POST /run to enqueue, poll /status/{id} until COMPLETED,
+    /// then base64-decode the handler's audio_b64 back into WAV bytes. Polling (not
+    /// /runsync) so a long cold start doesn't hit the ~90s sync cap.
+    private func fetchRunpodWav(payload: TTSPayload) async throws -> Data {
+        struct Body: Encodable { let input: TTSPayload }
+        struct RunResp: Decodable { let id: String }
+        struct StatusResp: Decodable {
+            let status: String
+            let output: Output?
+            struct Output: Decodable { let audio_b64: String?; let error: String? }
+        }
+        let ep = runpodEndpoint.trimmingCharacters(in: .whitespaces)
+        let key = runpodKey.trimmingCharacters(in: .whitespaces)
+        guard !ep.isEmpty, !key.isEmpty else {
+            log("TTS ✗ RunPod endpoint/key not set")
+            throw err("Set the RunPod endpoint ID and API key in Settings first")
+        }
+        let base = "https://api.runpod.ai/v2/\(ep)"
+
+        var req = URLRequest(url: URL(string: "\(base)/run")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONEncoder().encode(Body(input: payload))
+        log("TTS → RunPod \(base)/run")
+        let t0 = Date()
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            throw err("RunPod /run failed (status \((resp as? HTTPURLResponse)?.statusCode ?? -1))")
+        }
+        let job = try JSONDecoder().decode(RunResp.self, from: data)
+
+        let statusURL = URL(string: "\(base)/status/\(job.id)")!
+        let deadline = Date().addingTimeInterval(300)
+        while Date() < deadline {
+            var sreq = URLRequest(url: statusURL)
+            sreq.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            let (sdata, _) = try await URLSession.shared.data(for: sreq)
+            let s = try JSONDecoder().decode(StatusResp.self, from: sdata)
+            switch s.status {
+            case "COMPLETED":
+                guard let b64 = s.output?.audio_b64, let wav = Data(base64Encoded: b64) else {
+                    throw err(s.output?.error ?? "RunPod returned no audio")
+                }
+                log("TTS ✓ RunPod \(wav.count) bytes in \(String(format: "%.1f", Date().timeIntervalSince(t0)))s")
+                return wav
+            case "FAILED", "CANCELLED", "TIMED_OUT":
+                throw err("RunPod job \(s.status)")
+            default:  // IN_QUEUE / IN_PROGRESS
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+        }
+        throw err("RunPod TTS timed out")
     }
 
     private func streamLipSync(audio: Data) async throws {
@@ -734,8 +946,11 @@ struct MuseTalkView: View {
         req.timeoutInterval = 600
         req.httpBody = body
 
+        log("Lip-sync → local http://127.0.0.1:8810/lipsync_stream")
+        let t0 = Date()
         let (bytes, resp) = try await URLSession.shared.bytes(for: req)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            log("Lip-sync ✗ request failed")
             throw err("render failed (is the MuseTalk server running on 8810?)")
         }
 
@@ -750,6 +965,7 @@ struct MuseTalkView: View {
         }
 
         let tmpDir = FileManager.default.temporaryDirectory
+        var segCount = 0
         while true {
             guard let header = try await read(4), header.count == 4 else { break }
             let len = header.withUnsafeBytes { Int($0.load(as: UInt32.self).bigEndian) }
@@ -759,7 +975,9 @@ struct MuseTalkView: View {
             let url = tmpDir.appendingPathComponent("seg_\(UUID().uuidString).mp4")
             try mp4.write(to: url)
             enqueue(AVPlayerItem(url: url))
+            segCount += 1
         }
+        log("Lip-sync ✓ \(segCount) segments in \(String(format: "%.1f", Date().timeIntervalSince(t0)))s")
     }
 
     private func enqueue(_ item: AVPlayerItem) {
@@ -774,7 +992,14 @@ struct MuseTalkView: View {
             renderState = .ready
             endObserver = NotificationCenter.default.addObserver(
                 forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main
-            ) { _ in
+            ) { note in
+                // object: nil means this also fires for the idle-loop background
+                // repeating underneath — only react to our own talking segments
+                // (named seg_*.mp4) or an unrelated idle-loop repeat can trigger
+                // returnToIdle() mid-sentence instead of at the real end.
+                guard let endedItem = note.object as? AVPlayerItem,
+                      let url = (endedItem.asset as? AVURLAsset)?.url,
+                      url.lastPathComponent.hasPrefix("seg_") else { return }
                 if generationDone, (player?.items().count ?? 0) <= 1 {
                     returnToIdle()
                 }
@@ -833,10 +1058,18 @@ struct MuseTalkView: View {
         idleReadyObserver = player.observe(\.currentItem?.status, options: [.new, .initial]) { p, _ in
             guard p.currentItem?.status == .readyToPlay else { return }
             DispatchQueue.main.async {
+                previousIdleLoopPlayer = idleLoopPlayer
                 currentIdleLoopURL = url
                 idleLooper = looper
+                idleLoopVisible = false
                 idleLoopPlayer = player
                 player.play()
+                // flip on the next tick so the opacity animation actually fades in
+                // rather than snapping straight to 1 alongside the player swap above
+                DispatchQueue.main.async { idleLoopVisible = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    previousIdleLoopPlayer = nil
+                }
             }
         }
     }
@@ -885,6 +1118,12 @@ struct MuseTalkView: View {
 
     private func err(_ msg: String) -> NSError {
         NSError(domain: "MuseTalk", code: 0, userInfo: [NSLocalizedDescriptionKey: msg])
+    }
+
+    private func log(_ msg: String) {
+        let ts = Date().formatted(date: .omitted, time: .standard)
+        logLines.append("\(ts)  \(msg)")
+        if logLines.count > 100 { logLines.removeFirst(logLines.count - 100) }
     }
 
     private var isRendering: Bool {
