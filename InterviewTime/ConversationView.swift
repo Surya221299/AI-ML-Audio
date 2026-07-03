@@ -24,6 +24,7 @@ struct ConversationView: View {
     @State private var transcripts: [String] = []
     @State private var started = false
     @State private var atClosing = false          // sedang di pertanyaan penutup
+    @State private var closingQACount = 0         // berapa kali kandidat bertanya balik
     @State private var overallFB: JSONValue? = nil
     @State private var questionFBs: [JSONValue] = []
     @State private var noQuestionsFB: String = ""
@@ -158,19 +159,46 @@ struct ConversationView: View {
             do {
                 let stt = try await prep.whisper.transcribe(url: url)
                 answer = stt.text
-                transcripts.append(stt.text)
-            } catch { transcripts.append("") }
+            } catch { answer = "" }
 
             if atClosing {
-                let decline = await prep.classifyDecline(answer)
-                await finishAndShowFeedback(declined: decline)
+                await handleClosingAnswer(answer)
             } else {
+                // Hanya jawaban interview (4 pertanyaan) yang masuk transcripts
+                transcripts.append(answer)
                 await playNextQuestion()
             }
         } else {
             guard await recorder.requestPermission() else { return }
             try? recorder.start()
         }
+    }
+
+    /// Menangani fase penutup: kandidat bertanya balik (maks 3) atau decline → feedback.
+    private func handleClosingAnswer(_ answer: String) async {
+        // Sudah mencapai batas → apa pun jawabannya, tutup + feedback (sudah pernah bertanya)
+        if closingQACount >= prep.maxClosingQA {
+            await finishAndShowFeedback(declined: false)
+            return
+        }
+
+        let decline = await prep.classifyDecline(answer)
+        if decline {
+            // Kalau BELUM pernah bertanya sama sekali → feedback "tidak bertanya balik".
+            // Kalau sudah pernah bertanya lalu sekarang bilang cukup → bukan "tidak bertanya".
+            await finishAndShowFeedback(declined: closingQACount == 0)
+            return
+        }
+
+        // Kandidat bertanya balik → classify → putar video jawaban yang sudah siap
+        closingQACount += 1
+        let cat = await prep.classifyClosingCategory(answer)
+        if let urls = prep.loadSaved(prep.answerDir(cat)) {
+            await playItems(urls)
+        }
+        // Tidak langsung tutup — setelah video selesai, tombol aktif lagi.
+        // Kandidat boleh bertanya lagi; kalau sudah 3x, giliran berikutnya otomatis tutup
+        // (dicegat oleh guard closingQACount >= maxClosingQA di atas).
     }
 
     private func finishAndShowFeedback(declined: Bool) async {
@@ -285,6 +313,24 @@ struct ConversationView: View {
                                     .foregroundColor(.white.opacity(0.85))
                                     .fixedSize(horizontal: false, vertical: true)
                             }
+                            // Transkrip jawaban kandidat
+                            let ans = idx < transcripts.count ? transcripts[idx] : ""
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text("Jawaban kamu")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundColor(.white.opacity(0.5))
+                                Text(ans.isEmpty ? "(tidak ada jawaban)" : ans)
+                                    .font(.system(size: 12))
+                                    .italic()
+                                    .foregroundColor(.white.opacity(0.7))
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(8)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Color.white.opacity(0.05))
+                            .cornerRadius(6)
+                            .padding(.vertical, 2)
+
                             feedbackList("Bagus", fb["plus_points"]?.stringArray())
                             feedbackList("Perbaikan", fb["improvements"]?.stringArray())
                         }
@@ -337,6 +383,13 @@ struct ConversationView: View {
         }
     }
 
+    /// Menunggu sampai video yang sedang diputar selesai (isTalking jadi false).
+    private func waitTalkingEnd() async {
+        while isTalking {
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+
     private func playNextQuestion() async {
         if currentQ >= prep.questions.count {
             // Semua pertanyaan selesai → putar closing, lalu tunggu jawaban penutup
@@ -351,17 +404,26 @@ struct ConversationView: View {
         }
     }
 
+    @State private var endObserver: NSObjectProtocol?
+
     @MainActor private func playItems(_ urls: [URL]) {
+        // Bersihkan observer lama agar tidak salah men-trigger isTalking=false
+        if let obs = endObserver {
+            NotificationCenter.default.removeObserver(obs)
+            endObserver = nil
+        }
         let items = urls.map { AVPlayerItem(url: $0) }
         let q = AVQueuePlayer()
         for it in items { q.insert(it, after: nil) }
-        if let last = items.last {
-            NotificationCenter.default.addObserver(
-                forName: .AVPlayerItemDidPlayToEndTime, object: last, queue: .main
-            ) { _ in self.isTalking = false }
-        }
         player = q
         isTalking = true
         q.play()
+        if let last = items.last {
+            endObserver = NotificationCenter.default.addObserver(
+                forName: .AVPlayerItemDidPlayToEndTime, object: last, queue: .main
+            ) { _ in
+                Task { @MainActor in self.isTalking = false }
+            }
+        }
     }
 }

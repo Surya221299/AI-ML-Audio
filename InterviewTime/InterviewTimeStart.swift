@@ -46,7 +46,7 @@ struct InterviewTimeStartView: View {
     @State private var isStarting = false
     @State private var showFileImporter = false
     @StateObject private var prep = InterviewPrep()
-    @State private var enterInterview = false      // true → tampilkan ConversationView
+    @State private var enterInterview = false
 
     private var canStart: Bool {
         switch mode {
@@ -209,6 +209,11 @@ struct InterviewTimeStartView: View {
             }
             .padding(.top, 16)
 
+            if prep.isWorking || prep.isReady {
+                prepStepsList
+                    .padding(.top, 18)
+            }
+
             startButton
                 .padding(.top, 26)
 
@@ -364,7 +369,40 @@ struct InterviewTimeStartView: View {
 
     // MARK: CTA
 
-    private var startButton: some View {
+    // MARK: - Daftar progres persiapan (shimmer)
+
+    private var prepStepsList: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach(prep.steps) { step in
+                HStack(spacing: 10) {
+                    switch step.status {
+                    case .done:
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(Theme.accent)
+                        Text(step.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(Theme.accent)
+                    case .active:
+                        ProgressView().controlSize(.small)
+                        ShimmerText(step.title)
+                    case .pending:
+                        Image(systemName: "circle")
+                            .font(.system(size: 14))
+                            .foregroundColor(Theme.textMuted.opacity(0.4))
+                        Text(step.title)
+                            .font(.system(size: 14))
+                            .foregroundColor(Theme.textMuted.opacity(0.5))
+                    }
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .animation(.easeInOut(duration: 0.3), value: prep.steps)
+    }
+
+        private var startButton: some View {
         VStack(spacing: 10) {
             Button(action: primaryAction) {
                 HStack(spacing: 8) {
@@ -474,6 +512,42 @@ extension Color {
 }
 
 // MARK: - Preview
+
+
+
+// MARK: - Shimmer Text (teks abu-abu dengan kilau bergerak, ala loading scraping)
+
+struct ShimmerText: View {
+    let text: String
+    @State private var phase: CGFloat = -1
+
+    init(_ text: String) { self.text = text }
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 14, weight: .medium))
+            .foregroundColor(Color(hex: 0x8A8A90))
+            .overlay(
+                GeometryReader { geo in
+                    LinearGradient(
+                        colors: [.clear, .white.opacity(0.75), .clear],
+                        startPoint: .leading, endPoint: .trailing
+                    )
+                    .frame(width: geo.size.width * 0.5)
+                    .offset(x: phase * geo.size.width * 1.5)
+                    .blendMode(.screen)
+                }
+                .mask(
+                    Text(text).font(.system(size: 14, weight: .medium))
+                )
+            )
+            .onAppear {
+                withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
+                    phase = 1
+                }
+            }
+    }
+}
 
 #Preview {
     InterviewTimeStartView()
