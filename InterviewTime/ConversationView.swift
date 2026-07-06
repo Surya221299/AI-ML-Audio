@@ -21,8 +21,27 @@ struct ConversationView: View {
     @State private var isTalking = false
     @State private var isBusy = false
     @State private var currentQ = 0
+    @State private var followUpsUsed = 0
+    @State private var followUpText = ""
+    @State private var awaitingFollowUpAnswer = false
+    @State private var activeQuestionIndex: Int? = nil
     @State private var transcripts: [String] = []
     @State private var started = false
+    // Idle loop (adopsi dari MuseTalkView teman)
+    @State private var idleLoopPlayer: AVQueuePlayer?
+    @State private var idleLoopVisible = false
+    @State private var previousIdleLoopPlayer: AVQueuePlayer?
+    @State private var idleLooper: AVPlayerLooper?
+    @State private var currentIdleLoopURL: URL?
+    @State private var idleReadyObserver: NSKeyValueObservation?
+    // Streaming/session
+    @State private var startedPlayback = false
+    @State private var generationDone = false
+    // UI video-call (dekoratif, ala Zoom)
+    @State private var micOn = true
+    @State private var cameraOn = false
+    @State private var showSettings = false
+    @State private var pipOffset: CGSize = .zero
     @State private var atClosing = false          // sedang di pertanyaan penutup
     @State private var closingQACount = 0         // berapa kali kandidat bertanya balik
     @State private var overallFB: JSONValue? = nil
@@ -35,14 +54,114 @@ struct ConversationView: View {
     @State private var questionsDoneCount = 0 // berapa per-question sudah masuk
 
     var body: some View {
-        ZStack {
-            Color(hex: "050709").ignoresSafeArea()
+        VStack(spacing: 0) {
+            callTopBar
 
-            if let portrait {
+            ZStack {
+                videoArea
+
+                // Self-view PiP kamera user — pojok kanan bawah
+                VStack {
+                    Spacer()
+                    HStack {
+                        Spacer()
+                        selfViewPiP
+                            .padding(.trailing, 16)
+                            .padding(.bottom, 14)
+                            .offset(pipOffset)
+                            .gesture(DragGesture().onChanged { v in pipOffset = v.translation })
+                    }
+                }
+
+                // Feedback overlay (dim + panel kanan 50%)
+                if showFeedback {
+                    Rectangle().fill(.black.opacity(0.6))
+                        .background(.ultraThinMaterial)
+                        .ignoresSafeArea().transition(.opacity)
+                    GeometryReader { geo in
+                        HStack(spacing: 0) {
+                            Spacer()
+                            feedbackPanel
+                                .frame(width: geo.size.width * 0.5)
+                                .frame(maxHeight: .infinity)
+                                .background(Color(hex: "16161A"))
+                                .transition(.move(edge: .trailing))
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if !showFeedback { callControlBar }
+        }
+        .background(Color.black)
+        .overlay(alignment: .trailing) {
+            if showSettings {
+                ZStack(alignment: .trailing) {
+                    Color.black.opacity(0.4).ignoresSafeArea()
+                        .onTapGesture { withAnimation(.easeInOut(duration: 0.22)) { showSettings = false } }
+                    settingsSidebar
+                        .frame(width: 320).frame(maxHeight: .infinity)
+                        .background(Color(hex: "0e1117"))
+                        .transition(.move(edge: .trailing))
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.easeInOut(duration: 0.22), value: showSettings)
+        .frame(minWidth: 900, minHeight: 640)
+        .preferredColorScheme(.dark)
+        .animation(.easeInOut(duration: 0.4), value: isTalking)
+        .animation(.easeInOut(duration: 0.35), value: showFeedback)
+        .task {
+            guard !started else { return }
+            started = true
+            portrait = NSImage(named: "Interviewer")
+            startInitialIdleLoop()
+            await playOpening()
+        }
+    }
+
+    // MARK: - Top bar
+
+    private var callTopBar: some View {
+        HStack {
+            Button(action: { onExit() }) {
+                HStack(spacing: 5) {
+                    Image(systemName: "chevron.left").font(.system(size: 11, weight: .semibold))
+                    Text("Leave").font(.system(size: 12, weight: .medium))
+                }
+                .foregroundColor(.secondary)
+            }
+            .buttonStyle(.plain)
+            Spacer()
+        }
+        .padding(.horizontal, 20).padding(.vertical, 12)
+        .background(.black.opacity(0.55))
+        .overlay(alignment: .bottom) {
+            Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
+        }
+    }
+
+    // MARK: - Video area (idle loop + talking + name tag)
+
+    private var videoArea: some View {
+        ZStack {
+            Color(hex: "050709").frame(maxWidth: .infinity, maxHeight: .infinity)
+
+            if let previousIdleLoopPlayer {
+                FullScreenVideoPlayer(player: previousIdleLoopPlayer)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            if let idleLoopPlayer {
+                FullScreenVideoPlayer(player: idleLoopPlayer)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .opacity(idleLoopVisible ? 1 : 0)
+                    .animation(.easeInOut(duration: 0.3), value: idleLoopVisible)
+            } else if let portrait {
                 Image(nsImage: portrait)
                     .resizable().scaledToFill()
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    .clipped()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
             }
 
             if isTalking, let player {
@@ -60,10 +179,8 @@ struct ConversationView: View {
                 Spacer()
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Gemala").font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(.white)
-                        Text("AI/ML Engineer Manager").font(.system(size: 10))
-                            .foregroundColor(.white.opacity(0.6))
+                        Text("Gemala").font(.system(size: 13, weight: .semibold)).foregroundColor(.white)
+                        Text("AI/ML Engineer Manager").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
                     }
                     .padding(.horizontal, 12).padding(.vertical, 8)
                     .background(.black.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
@@ -71,70 +188,103 @@ struct ConversationView: View {
                     Spacer()
                 }
             }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .animation(.easeInOut(duration: 0.3), value: isTalking)
+    }
 
-            // Kontrol: bar hitam full-width + tombol Rekam & Jawab / Selesai
-            if !showFeedback {
-                VStack(spacing: 0) {
-                    Spacer()
-                    let controlDisabled = isBusy || isTalking
-                    Button(action: { Task { await answerThenNext() } }) {
-                        HStack(spacing: 8) {
-                            Image(systemName: isRecording ? "stop.fill" : "mic.fill")
-                                .font(.system(size: 15, weight: .semibold))
-                            Text(isRecording ? "Selesai" : "Rekam & Jawab")
-                                .font(.system(size: 15, weight: .semibold))
-                        }
-                        .padding(.horizontal, 28)
-                        .padding(.vertical, 13)
-                        .background(
-                            RoundedRectangle(cornerRadius: 12)
-                                .fill(isRecording ? Color.red.opacity(0.9) : Color.green.opacity(0.9))
-                        )
-                        .foregroundColor(.white)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(controlDisabled)
-                    .opacity(controlDisabled ? 0.4 : 1.0)
-                    .animation(.easeInOut(duration: 0.2), value: controlDisabled)
-                    .padding(.horizontal, 20)
-                    .padding(.vertical, 12)
-                    .frame(maxWidth: .infinity)
-                    .background(Color.black.opacity(0.9))
+    // MARK: - Self-view PiP
+
+    private var selfViewPiP: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 10).fill(Color(hex: "141820"))
+            CameraPreview(isActive: cameraOn)
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .opacity(cameraOn ? 1 : 0)
+            if !cameraOn {
+                VStack(spacing: 5) {
+                    Image(systemName: "video.slash.fill")
+                        .font(.system(size: 20)).foregroundColor(.white.opacity(0.4))
+                    Text("Camera off")
+                        .font(.system(size: 9, weight: .medium)).foregroundColor(.white.opacity(0.3))
                 }
             }
-            // Dim + blur gelap seperti panggilan terputus
-            if showFeedback {
-                Rectangle()
-                    .fill(.black.opacity(0.6))
-                    .background(.ultraThinMaterial)
-                    .ignoresSafeArea()
-                    .transition(.opacity)
-            }
+            RoundedRectangle(cornerRadius: 10).stroke(Color.white.opacity(0.12), lineWidth: 1)
+        }
+        .frame(width: 112, height: 82)
+        .shadow(color: .black.opacity(0.5), radius: 8, y: 4)
+    }
 
-            // Overlay feedback dari kanan (50% width)
-            if showFeedback {
-                GeometryReader { geo in
-                    HStack(spacing: 0) {
-                        Spacer()
-                        feedbackPanel
-                            .frame(width: geo.size.width * 0.5)
-                            .frame(maxHeight: .infinity)
-                            .background(Color(hex: "16161A"))
-                            .transition(.move(edge: .trailing))
+    // MARK: - Control bar (mic/camera dekoratif + Rekam & Jawab + settings/leave)
+
+    private var callControlBar: some View {
+        let controlDisabled = isBusy || isTalking
+        return HStack(spacing: 0) {
+            HStack(spacing: 14) {
+                callControlButton(icon: micOn ? "mic.fill" : "mic.slash.fill",
+                                  label: micOn ? "Mute" : "Unmute",
+                                  tint: micOn ? .white : .red, highlighted: !micOn) { micOn.toggle() }
+                callControlButton(icon: cameraOn ? "video.fill" : "video.slash.fill",
+                                  label: "Camera",
+                                  tint: cameraOn ? .white : .red, highlighted: !cameraOn) { cameraOn.toggle() }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Tombol utama: Rekam & Jawab
+            Button(action: { Task { await answerThenNext() } }) {
+                HStack(spacing: 8) {
+                    Image(systemName: isRecording ? "stop.fill" : "mic.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                    Text(isRecording ? "Selesai" : "Rekam & Jawab")
+                        .font(.system(size: 14, weight: .semibold))
+                }
+                .padding(.horizontal, 26).padding(.vertical, 12)
+                .background(isRecording ? Color.red.opacity(0.9) : Color.green.opacity(0.9), in: Capsule())
+                .foregroundColor(.white)
+            }
+            .buttonStyle(.plain)
+            .disabled(controlDisabled)
+            .opacity(controlDisabled ? 0.4 : 1.0)
+            .animation(.easeInOut(duration: 0.2), value: controlDisabled)
+
+            HStack(spacing: 14) {
+                callControlButton(icon: "gearshape.fill", label: "Settings",
+                                  tint: showSettings ? .white : .secondary, highlighted: showSettings) {
+                    withAnimation(.easeInOut(duration: 0.22)) { showSettings.toggle() }
+                }
+                Button(action: { onExit() }) {
+                    VStack(spacing: 4) {
+                        Image(systemName: "phone.down.fill")
+                            .font(.system(size: 15)).foregroundColor(.white)
+                            .frame(width: 44, height: 44)
+                            .background(Color.red, in: Circle())
+                        Text("Leave").font(.system(size: 9, weight: .medium)).foregroundColor(.secondary)
                     }
                 }
-                .ignoresSafeArea()
+                .buttonStyle(.plain)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        .padding(.horizontal, 28).padding(.vertical, 14)
+        .background(.black.opacity(0.72))
+        .overlay(alignment: .top) {
+            Rectangle().fill(Color.white.opacity(0.05)).frame(height: 1)
+        }
+    }
+
+    @ViewBuilder
+    private func callControlButton(icon: String, label: String, tint: Color,
+                                   highlighted: Bool = false, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon)
+                    .font(.system(size: 15)).foregroundColor(tint)
+                    .frame(width: 44, height: 44)
+                    .background(highlighted ? Color.white.opacity(0.18) : Color.white.opacity(0.08), in: Circle())
+                Text(label).font(.system(size: 9, weight: .medium)).foregroundColor(.secondary)
             }
         }
-        .frame(minWidth: 900, minHeight: 640)
-        .animation(.easeInOut(duration: 0.4), value: isTalking)
-        .animation(.easeInOut(duration: 0.35), value: showFeedback)
-        .task {
-            guard !started else { return }
-            started = true
-            portrait = NSImage(named: "Interviewer")
-            await playOpening()
-        }
+        .buttonStyle(.plain)
     }
 
     // Recorder milik prep tidak ada; buat sendiri di sini
@@ -161,11 +311,35 @@ struct ConversationView: View {
                 answer = stt.text
             } catch { answer = "" }
 
-            if atClosing {
+            if awaitingFollowUpAnswer {
+                // Jawaban atas follow-up: catat sebagai lanjutan jawaban pertanyaan aktif, lalu lanjut
+                awaitingFollowUpAnswer = false
+                if let qIdx = activeQuestionIndex, qIdx < transcripts.count {
+                    transcripts[qIdx] += " " + answer
+                }
+                await playNextQuestion()
+            } else if atClosing {
                 await handleClosingAnswer(answer)
             } else {
-                // Hanya jawaban interview (4 pertanyaan) yang masuk transcripts
+                // Jawaban interview → simpan transkrip
                 transcripts.append(answer)
+                // Follow-up (maks 2, hanya jika RunPod aktif) — pertanyaan yang barusan dijawab
+                if prep.followUpEnabled, followUpsUsed < prep.maxFollowUps,
+                   let qIdx = activeQuestionIndex, qIdx < prep.questions.count {
+                    let fu = await prep.generateFollowUp(question: prep.questions[qIdx], answer: answer)
+                    if !fu.isEmpty {
+                        // Render dulu; kuota hanya naik kalau BERHASIL.
+                        let urls = await prep.renderFollowUp(text: fu)
+                        if let urls, !urls.isEmpty {
+                            followUpsUsed += 1        // sukses → baru pakai kuota
+                            followUpText = fu
+                            await playItems(urls)
+                            awaitingFollowUpAnswer = true
+                            return
+                        }
+                        // Render gagal (mis. RunPod error) → kuota TIDAK terpakai, lanjut normal.
+                    }
+                }
                 await playNextQuestion()
             }
         } else {
@@ -230,6 +404,57 @@ struct ConversationView: View {
         }
     }
 
+    // MARK: - Settings sidebar (RunPod / follow-up)
+
+    private var settingsSidebar: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                HStack {
+                    Text("Settings").font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
+                    Spacer()
+                    Button(action: { withAnimation(.easeInOut(duration: 0.22)) { showSettings = false } }) {
+                        Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
+                            .foregroundColor(.secondary).padding(7)
+                            .background(Color.white.opacity(0.08), in: Circle())
+                    }.buttonStyle(.plain)
+                }
+
+                Divider().background(Color.white.opacity(0.08))
+
+                // Follow-up via RunPod
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("FOLLOW-UP QUESTION (RUNPOD)")
+                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
+                        .foregroundColor(.secondary).tracking(1.2)
+                    Text(prep.followUpEnabled
+                         ? "Aktif — maks \(prep.maxFollowUps) follow-up. Isi RunPod untuk TTS cepat."
+                         : "Nonaktif — isi endpoint & API key untuk mengaktifkan follow-up.")
+                        .font(.system(size: 11)).foregroundColor(prep.followUpEnabled ? .green : .secondary)
+
+                    TextField("RunPod endpoint ID", text: $prep.runpodEndpoint)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, design: .monospaced)).foregroundColor(.white)
+                        .padding(10).background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.09)))
+                    SecureField("RunPod API key", text: $prep.runpodKey)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, design: .monospaced)).foregroundColor(.white)
+                        .padding(10).background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.09)))
+
+                    Text("Follow-up dipakai: \(followUpsUsed) / \(prep.maxFollowUps)")
+                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.5))
+                }
+
+                Divider().background(Color.white.opacity(0.08))
+
+                Text("Catatan: RunPod mempercepat TTS. Render lip-sync tetap lokal, jadi tetap ada jeda beberapa detik.")
+                    .font(.system(size: 10)).foregroundColor(.white.opacity(0.4))
+            }
+            .padding(20)
+        }
+    }
+
     // MARK: - Feedback panel
 
     private var feedbackPanel: some View {
@@ -277,11 +502,6 @@ struct ConversationView: View {
                 if noQFBDone {
                     if overallDone, let fb = overallFB {
                         Divider().background(Color.white.opacity(0.15))
-                        if let score = fb["overall_score"]?.doubleValue {
-                            Text("Skor Keseluruhan: \(Int(score))/10")
-                                .font(.system(size: 30, weight: .bold))
-                                .foregroundColor(Color(hex: 0xD97757))
-                        }
                         if let rec = fb["recommendation"]?.stringValue {
                             Text(rec).font(.system(size: 15, weight: .semibold))
                                 .foregroundColor(.white.opacity(0.9))
@@ -292,7 +512,6 @@ struct ConversationView: View {
                         }
                         feedbackList("✅ Kekuatan", fb["strengths"]?.stringArray())
                         feedbackList("🔧 Perlu Ditingkatkan", fb["weaknesses_or_gaps"]?.stringArray())
-                        feedbackList("⚠️ Red Flags", fb["red_flags"]?.stringArray())
                         feedbackList("💡 Saran untuk Kamu", fb["feedback_for_candidate"]?.stringArray())
                     } else {
                         loadingRow("Menyusun feedback keseluruhan…")
@@ -399,6 +618,7 @@ struct ConversationView: View {
         }
         let i = currentQ
         currentQ += 1
+        activeQuestionIndex = i
         if let urls = prep.loadSaved(prep.questionDir(i)) {
             await playItems(urls)
         }
@@ -407,22 +627,106 @@ struct ConversationView: View {
     @State private var endObserver: NSObjectProtocol?
 
     @MainActor private func playItems(_ urls: [URL]) {
-        // Bersihkan observer lama agar tidak salah men-trigger isTalking=false
-        if let obs = endObserver {
-            NotificationCenter.default.removeObserver(obs)
-            endObserver = nil
-        }
-        let items = urls.map { AVPlayerItem(url: $0) }
-        let q = AVQueuePlayer()
-        for it in items { q.insert(it, after: nil) }
-        player = q
-        isTalking = true
-        q.play()
-        if let last = items.last {
+        // Sistem streaming enqueue + idle (adopsi MuseTalkView teman):
+        // segmen pertama memulai playback & isTalking; sisanya di-antre.
+        // Saat semua segmen habis, kembali ke idle loop.
+        beginTalkingSession()
+        let tmpItems = urls.map { AVPlayerItem(url: $0) }
+        for it in tmpItems { enqueue(it) }
+        generationDone = true
+        // Kalau tak ada video, langsung kembali idle
+        if !startedPlayback { returnToIdle() }
+    }
+
+    // MARK: - Talking session + streaming enqueue
+
+    private func beginTalkingSession() {
+        if let obs = endObserver { NotificationCenter.default.removeObserver(obs); endObserver = nil }
+        player?.pause()
+        player = nil
+        startedPlayback = false
+        generationDone = false
+    }
+
+    private func enqueue(_ item: AVPlayerItem) {
+        if !startedPlayback {
+            let q = AVQueuePlayer(playerItem: item)
+            q.actionAtItemEnd = .advance
+            player = q
+            startedPlayback = true
+            isTalking = true
             endObserver = NotificationCenter.default.addObserver(
-                forName: .AVPlayerItemDidPlayToEndTime, object: last, queue: .main
-            ) { _ in
-                Task { @MainActor in self.isTalking = false }
+                forName: .AVPlayerItemDidPlayToEndTime, object: nil, queue: .main
+            ) { note in
+                // hanya bereaksi ke segmen kita (seg_*.mp4), bukan idle loop di belakang
+                guard let ended = note.object as? AVPlayerItem,
+                      let url = (ended.asset as? AVURLAsset)?.url,
+                      url.lastPathComponent.hasPrefix("seg_") else { return }
+                if generationDone, (player?.items().count ?? 0) <= 1 {
+                    returnToIdle()
+                }
+            }
+            q.play()
+        } else {
+            player?.insert(item, after: nil)
+        }
+    }
+
+    private func returnToIdle() {
+        isTalking = false
+        idleLoopPlayer?.seek(to: .zero)
+        switchIdleLoop()
+    }
+
+    // MARK: - Idle loop (avatar diam bergerak)
+
+    private func idleLoopURLs() -> [URL] {
+        let dir = prep.outputsRoot
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        return files
+            .filter { $0.lastPathComponent.hasPrefix("idle_loop") && $0.pathExtension == "mp4" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private func switchIdleLoop() {
+        let candidates = idleLoopURLs()
+        guard !candidates.isEmpty else { return }
+        // idle_loop2 difavoritkan 6:1
+        let weighted = candidates.flatMap { url in
+            Array(repeating: url, count: url.lastPathComponent.contains("loop2") ? 6 : 1)
+        }
+        guard let next = weighted.randomElement() else { return }
+        guard next != currentIdleLoopURL || idleLoopPlayer == nil else { return }
+        playIdleLoop(next)
+    }
+
+    private func startInitialIdleLoop() {
+        if let loop2 = idleLoopURLs().first(where: { $0.lastPathComponent.contains("loop2") }) {
+            playIdleLoop(loop2)
+        } else {
+            switchIdleLoop()
+        }
+    }
+
+    private func playIdleLoop(_ url: URL) {
+        let p = AVQueuePlayer()
+        p.isMuted = true
+        let template = AVPlayerItem(url: url)
+        let looper = AVPlayerLooper(player: p, templateItem: template)
+        idleReadyObserver?.invalidate()
+        idleReadyObserver = p.observe(\.currentItem?.status, options: [.new, .initial]) { pl, _ in
+            guard pl.currentItem?.status == .readyToPlay else { return }
+            DispatchQueue.main.async {
+                previousIdleLoopPlayer = idleLoopPlayer
+                currentIdleLoopURL = url
+                idleLooper = looper
+                idleLoopVisible = false
+                idleLoopPlayer = p
+                p.play()
+                DispatchQueue.main.async { idleLoopVisible = true }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                    previousIdleLoopPlayer = nil
+                }
             }
         }
     }

@@ -42,13 +42,37 @@ final class InterviewPrep: ObservableObject {
     private let ttsURL = "http://127.0.0.1:8808/speak"
     private let lipsyncURL = "http://127.0.0.1:8810/lipsync_stream"
     let numQuestions = 4
+    let maxFollowUps = 2
+
+    // RunPod TTS (opsional) — kalau endpoint+key terisi, follow-up aktif.
+    @Published var runpodEndpoint = ""
+    @Published var runpodKey = ""
+    var followUpEnabled: Bool {
+        !runpodEndpoint.trimmingCharacters(in: .whitespaces).isEmpty
+        && !runpodKey.trimmingCharacters(in: .whitespaces).isEmpty
+    }
 
     let openingText = "Sebelum kita masuk ke sesi utama, boleh ceritakan sedikit tentang diri Anda? Termasuk background Anda, alasan tertarik dengan posisi ini, dan project atau pengalaman kerja yang pernah Anda kerjakan."
     let closingText = "Baik terimakasih, Sebelum kita mengakhiri sesi interview ini. Apakah dari anda ada pertanyaan untuk kami?"
 
+    // Jawaban tanya-balik yang TETAP (tidak berubah per JD) — di-cache seperti opening/closing.
+    let benefitAnswerText = "Terima kasih atas pertanyaannya. Saat ini saya dapat menjelaskan benefit secara umum, seperti BPJS, asuransi kesehatan, cuti tahunan, serta fasilitas kerja. Untuk detail mengenai nominal tunjangan, bonus, maupun benefit lainnya biasanya akan dijelaskan pada tahap offering karena menyesuaikan level dan posisi yang dilamar."
+    let prosesAnswerText = "Setelah interview HR ini, kandidat yang lolos akan melanjutkan ke tahap interview teknis dengan tim engineering. Setelah itu akan ada sesi final interview dengan user atau hiring manager. Seluruh proses biasanya memakan waktu sekitar satu hingga dua minggu, tergantung ketersediaan jadwal masing-masing pihak. Kami akan menghubungi Anda untuk setiap perkembangan proses."
+
+    // Kategori yang teksnya tetap (cache permanen) vs yang di-generate dari JD.
+    let fixedAnswerCategories = ["benefit", "proses"]
+
+    // Penutup yang ditambahkan di akhir SETIAP jawaban tanya-balik.
+    let answerFollowUpPrompt = " Apakah ada pertanyaan lain yang ingin Anda tanyakan?"
+
     // MARK: Folder tetap
     var outputsRoot: URL {
-        URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("outputs")
+        // Pakai #file (lokasi file sumber) → naik 2 folder ke root proyek → outputs/.
+        // Lebih andal daripada currentDirectoryPath yang tak menentu saat run dari Xcode.
+        URL(fileURLWithPath: #file)
+            .deletingLastPathComponent()   // InterviewTime/
+            .deletingLastPathComponent()   // root proyek
+            .appendingPathComponent("outputs")
     }
     var openingDir: URL { outputsRoot.appendingPathComponent("opening") }
     var closingDir: URL { outputsRoot.appendingPathComponent("closing") }
@@ -90,6 +114,9 @@ final class InterviewPrep: ObservableObject {
 
     func prepare(jobDescription: String) async {
         self.jobDescription = jobDescription
+        warmUpRunpodIfNeeded()   // panaskan RunPod di background bila follow-up aktif
+        print("PREP outputsRoot =", outputsRoot.path)
+        print("PREP openingDir exists? =", FileManager.default.fileExists(atPath: openingDir.path))
         initSteps(questionCount: numQuestions)
 
         // 1. STT — step 0
@@ -141,12 +168,13 @@ final class InterviewPrep: ObservableObject {
             }
             markStep(closingStep, .done)
         } catch {
-            stage = .failed("Gagal render: \(error.localizedDescription)"); return
+            stage = .failed("Gagal render: \(error.localizedDescription)"); print("PREP RENDER ERROR:", error); return
         }
 
-        // 4. Render jawaban tanya-balik (posisi, perusahaan, benefit, proses)
-        //    Selalu render ulang per JD → hapus cache lama.
-        for cat in closingCategories {
+        // 4. Render jawaban tanya-balik.
+        //    benefit & proses = teks TETAP → cache permanen (tidak dihapus, tidak generate ulang).
+        //    posisi & perusahaan = generate dari JD → render ulang tiap prepare.
+        for cat in closingCategories where !fixedAnswerCategories.contains(cat) {
             try? FileManager.default.removeItem(at: answerDir(cat))
         }
         do {
@@ -154,8 +182,19 @@ final class InterviewPrep: ObservableObject {
             let baseStep = 4 + numQuestions
             for (ci, cat) in closingCategories.enumerated() {
                 markStep(baseStep + ci, .active)
+                // benefit & proses: pakai teks tetap, dan lewati kalau sudah ada di cache
+                let isFixed = fixedAnswerCategories.contains(cat)
+                if isFixed, loadSaved(answerDir(cat)) != nil {
+                    markStep(baseStep + ci, .done); continue
+                }
                 stage = .rendering("Menyiapkan jawaban: \(cat)…")
-                let text = answers[cat] ?? defaultAnswer(cat)
+                var text: String
+                switch cat {
+                case "benefit": text = benefitAnswerText
+                case "proses":  text = prosesAnswerText
+                default:        text = answers[cat] ?? defaultAnswer(cat)
+                }
+                text += answerFollowUpPrompt   // penutup: tawarkan bertanya lagi
                 let wav = try await fetchTTSWav(text: text)
                 _ = try await renderToFiles(audio: wav, dir: answerDir(cat))
                 markStep(baseStep + ci, .done)
@@ -301,20 +340,91 @@ final class InterviewPrep: ObservableObject {
         return true
     }
 
+    /// Panaskan worker RunPod di background (tanpa blokir) supaya follow-up pertama tak kena cold start.
+    func warmUpRunpodIfNeeded() {
+        guard followUpEnabled else { return }
+        // Task biasa (tetap di MainActor, tapi URLSession async → tak memblokir UI).
+        Task { [weak self] in
+            guard let self else { return }
+            let payload = TTSPayload(
+                text: "Halo", emotion: "calm", voice: "male_40s",
+                cfg_value: 2.5, inference_timesteps: 6, max_tokens: 200, warmup_patches: 2)
+            _ = try? await self.fetchRunpodWav(payload: payload)
+        }
+    }
+
+        // MARK: - Follow-up question (on-demand, hanya jika followUpEnabled)
+
+    /// Buat 1 pertanyaan pendalaman SINGKAT dari jawaban user. Kosong = tak perlu follow-up.
+    func generateFollowUp(question: String, answer: String) async -> String {
+        if answer.trimmingCharacters(in: .whitespaces).isEmpty { return "" }
+        let system = """
+        Kamu pewawancara teknis. Berdasarkan pertanyaan dan jawaban kandidat, buat SATU pertanyaan
+        pendalaman (follow-up) yang singkat — maksimal satu kalimat, menggali lebih dalam dari jawaban.
+        Fokus satu hal. Bahasa Indonesia. Jika jawaban sudah lengkap/tidak perlu digali, balas "SKIP".
+        """
+        let user = "Pertanyaan: \(question)\nJawaban kandidat: \(answer)"
+        do {
+            let (content, _) = try await ollama.chat(
+                model: llmModel,
+                messages: [["role": "system", "content": system], ["role": "user", "content": user]],
+                temperature: 0.4, numPredict: 80)
+            let t = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            if t.uppercased().contains("SKIP") || t.isEmpty { return "" }
+            return t
+        } catch { return "" }
+    }
+
+    /// Render follow-up jadi video (TTS via RunPod bila aktif + lip-sync lokal).
+    func renderFollowUp(text: String) async -> [URL]? {
+        let dir = outputsRoot.appendingPathComponent("followup_\(UUID().uuidString.prefix(8))")
+        do {
+            let wav = try await fetchTTSWav(text: text, useCloud: followUpEnabled)
+            return try await renderToFiles(audio: wav, dir: dir)
+        } catch { return nil }
+    }
+
     // MARK: - Closing intent + Feedback
 
     /// true = kandidat "sudah cukup / tidak ada pertanyaan" (decline)
     func classifyDecline(_ answer: String) async -> Bool {
-        let system = "Classifier intent satu kata. \"decline\" jika tidak ada pertanyaan / sudah cukup. \"question\" jika ada pertanyaan. Jawab HANYA satu kata."
+        // Heuristik cepat dulu: kalau ada tanda tanya atau kata tanya, hampir pasti BERTANYA.
+        let a = answer.lowercased()
+        let tanya = ["?", "apa", "apakah", "bagaimana", "gimana", "berapa", "kapan",
+                     "kenapa", "mengapa", "siapa", "boleh saya tahu", "bisa dijelaskan",
+                     "ingin tahu", "mau tanya", "izin bertanya"]
+        if tanya.contains(where: { a.contains($0) }) { return false }
+
+        // Heuristik decline: frasa penutup yang jelas.
+        let cukup = ["tidak ada", "gak ada", "nggak ada", "cukup", "sudah cukup",
+                     "tidak", "sekian", "terima kasih saja", "no", "sudah jelas"]
+        let looksDecline = cukup.contains(where: { a.contains($0) })
+
+        let system = """
+        Tugasmu klasifikasi apakah kandidat MENGAJUKAN PERTANYAAN atau TIDAK, di akhir interview.
+        Jawab HANYA satu kata: "question" atau "decline".
+        - "question" = kandidat menanyakan sesuatu (tentang posisi, perusahaan, gaji, proses, dll).
+        - "decline" = kandidat menyatakan tidak ada pertanyaan / sudah cukup.
+        Contoh:
+        "Bagaimana budaya kerjanya?" -> question
+        "Apakah ada asuransi?" -> question
+        "Tidak ada, terima kasih" -> decline
+        "Sudah cukup" -> decline
+        Jika ragu, jawab "question".
+        """
         do {
             let (content, _) = try await ollama.chat(
                 model: llmModel,
                 messages: [["role": "system", "content": system],
-                           ["role": "user", "content": "Teks: \"\(answer)\""]],
-                temperature: 0.0, numPredict: 10)
-            return content.trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased().hasPrefix("decline")
-        } catch { return false }
+                           ["role": "user", "content": answer]],
+                temperature: 0.0, numPredict: 5)
+            let out = content.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            // Decline HANYA kalau LLM tegas bilang decline. Ragu → bertanya (lebih aman).
+            if out.hasPrefix("decline") { return true }
+            if out.hasPrefix("question") { return false }
+            // Output tak jelas → pakai heuristik frasa.
+            return looksDecline
+        } catch { return looksDecline }
     }
 
     let maxClosingQA = 3
@@ -424,24 +534,81 @@ final class InterviewPrep: ObservableObject {
         return mp4s.isEmpty ? nil : mp4s
     }
 
-    private func fetchTTSWav(text: String) async throws -> Data {
-        struct Payload: Encodable {
-            let text, emotion, voice: String
-            let cfg_value: Double
-            let inference_timesteps, max_tokens, warmup_patches: Int
-        }
+    struct TTSPayload: Encodable {
+        let text, emotion, voice: String
+        let cfg_value: Double
+        let inference_timesteps, max_tokens, warmup_patches: Int
+    }
+
+    /// TTS lokal (8808). useCloud=true → lewat RunPod (untuk follow-up cepat).
+    private func fetchTTSWav(text: String, useCloud: Bool = false) async throws -> Data {
+        let payload = TTSPayload(
+            text: text, emotion: "calm, professional", voice: "male_40s",
+            cfg_value: 2.5, inference_timesteps: 10, max_tokens: 1200, warmup_patches: 2)
+        if useCloud { return try await fetchRunpodWav(payload: payload) }
+
         var req = URLRequest(url: URL(string: ttsURL)!)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.timeoutInterval = 300
-        req.httpBody = try JSONEncoder().encode(Payload(
-            text: text, emotion: "calm, professional", voice: "male_40s",
-            cfg_value: 2.5, inference_timesteps: 10, max_tokens: 1200, warmup_patches: 2))
+        req.httpBody = try JSONEncoder().encode(payload)
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
             throw NSError(domain: "TTS", code: 1, userInfo: [NSLocalizedDescriptionKey: "TTS error (8808?)"])
         }
         return data
+    }
+
+    /// RunPod serverless VoxCPM2: enqueue → poll status → decode base64 WAV.
+    private func fetchRunpodWav(payload: TTSPayload) async throws -> Data {
+        struct Body: Encodable { let input: TTSPayload }
+        struct RunResp: Decodable { let id: String }
+        struct StatusResp: Decodable {
+            let status: String
+            let output: Output?
+            struct Output: Decodable { let audio_b64: String?; let error: String? }
+        }
+        let ep = runpodEndpoint.trimmingCharacters(in: .whitespaces)
+        let key = runpodKey.trimmingCharacters(in: .whitespaces)
+        guard !ep.isEmpty, !key.isEmpty else {
+            throw NSError(domain: "RunPod", code: 1, userInfo: [NSLocalizedDescriptionKey: "RunPod endpoint/key kosong"])
+        }
+        let base = "https://api.runpod.ai/v2/\(ep)"
+        var req = URLRequest(url: URL(string: "\(base)/run")!)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try JSONEncoder().encode(Body(input: payload))
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
+            throw NSError(domain: "RunPod", code: 2, userInfo: [NSLocalizedDescriptionKey: "RunPod /run gagal"])
+        }
+        print("RUNPOD /run response:", String(data: data, encoding: .utf8) ?? "nil")
+        let job = try JSONDecoder().decode(RunResp.self, from: data)
+        print("RUNPOD job id:", job.id)
+        let statusURL = URL(string: "\(base)/status/\(job.id)")!
+        let deadline = Date().addingTimeInterval(300)
+        var pollCount = 0
+        while Date() < deadline {
+            var sreq = URLRequest(url: statusURL)
+            sreq.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
+            let (sdata, _) = try await URLSession.shared.data(for: sreq)
+            pollCount += 1
+            print("RUNPOD poll #\(pollCount):", String(data: sdata, encoding: .utf8)?.prefix(300) ?? "nil")
+            let st = try JSONDecoder().decode(StatusResp.self, from: sdata)
+            switch st.status {
+            case "COMPLETED":
+                guard let b64 = st.output?.audio_b64, let wav = Data(base64Encoded: b64) else {
+                    throw NSError(domain: "RunPod", code: 3, userInfo: [NSLocalizedDescriptionKey: st.output?.error ?? "RunPod tanpa audio"])
+                }
+                return wav
+            case "FAILED", "CANCELLED", "TIMED_OUT":
+                throw NSError(domain: "RunPod", code: 4, userInfo: [NSLocalizedDescriptionKey: "RunPod job \(st.status)"])
+            default:
+                try await Task.sleep(nanoseconds: 1_500_000_000)
+            }
+        }
+        throw NSError(domain: "RunPod", code: 5, userInfo: [NSLocalizedDescriptionKey: "RunPod timeout"])
     }
 
     private func renderToFiles(audio: Data, dir: URL) async throws -> [URL] {
