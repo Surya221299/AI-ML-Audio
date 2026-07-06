@@ -81,10 +81,11 @@ struct ServerStatusBanner: View {
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(status.color.opacity(0.18)))
     }
 }
+import Combine
 
 struct MuseTalkView: View {
     let onBack: () -> Void
-
+    
     @StateObject private var tts = SimpleTTSService()
     @State private var text = "Selamat datang dan terimakasih sudah datang di interview, kita mulai, bisa jelaskan tentang background diri anda?"
     @State private var emotion = "male, mature, serious, curious"
@@ -735,6 +736,10 @@ struct MuseTalkView: View {
 
 
     // MARK: - Generate + lip-sync (sentence-pipelined, idle presence)
+    private func speakText(_ newText: String) async {
+        text = newText
+        await generateAndLipSync()
+    }
 
     private func generateAndLipSync() async {
         beginSession(label: "TTS+render")

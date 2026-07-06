@@ -9,7 +9,7 @@ import SwiftUI
 struct InterviewTimeApp: App {
     var body: some Scene {
         WindowGroup {
-            RootView()
+            InterviewTimeStartView()
         }
     }
 }

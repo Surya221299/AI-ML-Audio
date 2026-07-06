@@ -128,6 +128,10 @@ def _normalize(audio: np.ndarray, peak: float = 0.92) -> np.ndarray:
     m = np.max(np.abs(audio))
     return audio * (peak / m) if m > 1e-8 else audio
 
+def _pad_start(audio: np.ndarray, ms: float = 350) -> np.ndarray:
+    """Tambah keheningan di awal supaya onset huruf pertama tidak terpotong."""
+    pad = np.zeros(int(SAMPLE_RATE * ms / 1000), dtype=audio.dtype)
+    return np.concatenate([pad, audio])
 
 # ── /health ───────────────────────────────────────────────────────────────────
 
@@ -193,7 +197,8 @@ def speak(req: SpeakRequest):
         ]
         if not segments:
             raise RuntimeError("model produced no audio")
-        audio = _normalize(np.concatenate(segments))
+        # audio = _normalize(np.concatenate(segments))
+        audio = _pad_start(_normalize(np.concatenate(segments)))
 
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             sf.write(tmp.name, audio, SAMPLE_RATE, format="WAV", subtype="PCM_16")
@@ -268,7 +273,9 @@ async def speak_stream(req: SpeakRequest):
                     chunk = chunk.mean(axis=0)
                 segments.append(chunk)
             if segments:
-                audio = _normalize(np.concatenate(segments))
+                # audio = _normalize(np.concatenate(segments))
+                audio = _pad_start(_normalize(np.concatenate(segments)))
+
                 q.put(audio.tobytes())
             q.put(None)  # sentinel
         except Exception as e:
