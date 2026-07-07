@@ -40,7 +40,6 @@ struct ConversationView: View {
     // UI video-call (dekoratif, ala Zoom)
     @State private var micOn = true
     @State private var cameraOn = false
-    @State private var showSettings = false
     @State private var pipOffset: CGSize = .zero
     @State private var atClosing = false          // sedang di pertanyaan penutup
     @State private var closingQACount = 0         // berapa kali kandidat bertanya balik
@@ -95,20 +94,6 @@ struct ConversationView: View {
             if !showFeedback { callControlBar }
         }
         .background(Color.black)
-        .overlay(alignment: .trailing) {
-            if showSettings {
-                ZStack(alignment: .trailing) {
-                    Color.black.opacity(0.4).ignoresSafeArea()
-                        .onTapGesture { withAnimation(.easeInOut(duration: 0.22)) { showSettings = false } }
-                    settingsSidebar
-                        .frame(width: 320).frame(maxHeight: .infinity)
-                        .background(Color(hex: "0e1117"))
-                        .transition(.move(edge: .trailing))
-                }
-                .transition(.opacity)
-            }
-        }
-        .animation(.easeInOut(duration: 0.22), value: showSettings)
         .frame(minWidth: 900, minHeight: 640)
         .preferredColorScheme(.dark)
         .animation(.easeInOut(duration: 0.4), value: isTalking)
@@ -116,6 +101,7 @@ struct ConversationView: View {
         .task {
             guard !started else { return }
             started = true
+            transcripts = Array(repeating: "", count: prep.questions.count)
             portrait = NSImage(named: "Interviewer")
             startInitialIdleLoop()
             await playOpening()
@@ -248,10 +234,6 @@ struct ConversationView: View {
             .animation(.easeInOut(duration: 0.2), value: controlDisabled)
 
             HStack(spacing: 14) {
-                callControlButton(icon: "gearshape.fill", label: "Settings",
-                                  tint: showSettings ? .white : .secondary, highlighted: showSettings) {
-                    withAnimation(.easeInOut(duration: 0.22)) { showSettings.toggle() }
-                }
                 Button(action: { onExit() }) {
                     VStack(spacing: 4) {
                         Image(systemName: "phone.down.fill")
@@ -321,8 +303,13 @@ struct ConversationView: View {
             } else if atClosing {
                 await handleClosingAnswer(answer)
             } else {
-                // Jawaban interview → simpan transkrip
-                transcripts.append(answer)
+                // Simpan jawaban HANYA jika ini jawaban untuk salah satu dari 4 pertanyaan
+                // (activeQuestionIndex terisi setelah playNextQuestion pertama kali jalan).
+                // Jawaban perkenalan (sebelum pertanyaan pertama) TIDAK disimpan di transcripts,
+                // supaya index transcripts[i] selalu selaras dengan prep.questions[i].
+                if let qIdx = activeQuestionIndex, qIdx < transcripts.count {
+                    transcripts[qIdx] = answer
+                }
                 // Follow-up (maks 2, hanya jika RunPod aktif) — pertanyaan yang barusan dijawab
                 if prep.followUpEnabled, followUpsUsed < prep.maxFollowUps,
                    let qIdx = activeQuestionIndex, qIdx < prep.questions.count {
@@ -401,57 +388,6 @@ struct ConversationView: View {
             let fb = await prep.generateQuestionFeedback(question: q, answer: ans, position: position)
             questionFBs.append(fb)
             questionsDoneCount = questionFBs.count
-        }
-    }
-
-    // MARK: - Settings sidebar (RunPod / follow-up)
-
-    private var settingsSidebar: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                HStack {
-                    Text("Settings").font(.system(size: 15, weight: .semibold)).foregroundColor(.white)
-                    Spacer()
-                    Button(action: { withAnimation(.easeInOut(duration: 0.22)) { showSettings = false } }) {
-                        Image(systemName: "xmark").font(.system(size: 11, weight: .bold))
-                            .foregroundColor(.secondary).padding(7)
-                            .background(Color.white.opacity(0.08), in: Circle())
-                    }.buttonStyle(.plain)
-                }
-
-                Divider().background(Color.white.opacity(0.08))
-
-                // Follow-up via RunPod
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("FOLLOW-UP QUESTION (RUNPOD)")
-                        .font(.system(size: 9, weight: .semibold, design: .monospaced))
-                        .foregroundColor(.secondary).tracking(1.2)
-                    Text(prep.followUpEnabled
-                         ? "Aktif — maks \(prep.maxFollowUps) follow-up. Isi RunPod untuk TTS cepat."
-                         : "Nonaktif — isi endpoint & API key untuk mengaktifkan follow-up.")
-                        .font(.system(size: 11)).foregroundColor(prep.followUpEnabled ? .green : .secondary)
-
-                    TextField("RunPod endpoint ID", text: $prep.runpodEndpoint)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, design: .monospaced)).foregroundColor(.white)
-                        .padding(10).background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.09)))
-                    SecureField("RunPod API key", text: $prep.runpodKey)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, design: .monospaced)).foregroundColor(.white)
-                        .padding(10).background(Color.white.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
-                        .overlay(RoundedRectangle(cornerRadius: 8).stroke(Color.white.opacity(0.09)))
-
-                    Text("Follow-up dipakai: \(followUpsUsed) / \(prep.maxFollowUps)")
-                        .font(.system(size: 10, design: .monospaced)).foregroundColor(.white.opacity(0.5))
-                }
-
-                Divider().background(Color.white.opacity(0.08))
-
-                Text("Catatan: RunPod mempercepat TTS. Render lip-sync tetap lokal, jadi tetap ada jeda beberapa detik.")
-                    .font(.system(size: 10)).foregroundColor(.white.opacity(0.4))
-            }
-            .padding(20)
         }
     }
 

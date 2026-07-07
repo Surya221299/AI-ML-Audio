@@ -14,7 +14,7 @@ import UniformTypeIdentifiers
 // MARK: - Palet & Konstanta Desain
 
 private enum Theme {
-    static let accent      = Color(hex: 0xBA734A)
+    static let accent      = Color(hex: 0xD97757)
     static let accentInk   = Color(hex: 0x1A120E)   // teks di atas accent
 
     static let bgWindow    = Color(hex: 0x16161A)
@@ -46,7 +46,8 @@ struct InterviewTimeStartView: View {
     @State private var isStarting = false
     @State private var showFileImporter = false
     @StateObject private var prep = InterviewPrep()
-    @State private var enterInterview = false
+    @State private var followUpOn = false
+    @State private var enterInterview = false      // true → tampilkan ConversationView
 
     private var canStart: Bool {
         switch mode {
@@ -100,16 +101,9 @@ struct InterviewTimeStartView: View {
                             .frame(width: 11, height: 11)
                     )
                     .shadow(color: Theme.accent.opacity(0.35), radius: 7, y: 4)
-                HStack(spacing: 0) {
-                    Text("Gemala ")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundColor(.white)
-
-                    Text("AI")
-                        .font(.system(size: 24, weight: .semibold))
-                        .foregroundColor(Color(Theme.accent))
-                }
-                .font(.system(size: 16, weight: .semibold))
+                Text("InterviewTime")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(Color(hex: 0xEDEDF0))
             }
 
             VStack(alignment: .leading, spacing: 16) {
@@ -118,7 +112,7 @@ struct InterviewTimeStartView: View {
                     .foregroundColor(Color(hex: 0xF3F3F5))
                     .lineSpacing(4)
                     .fixedSize(horizontal: false, vertical: true)
-                Text("Masukkan Job Description, lalu latihan interview with AI via video call, dan dapatkan feedback")
+                Text("Paste Job Description, lalu AI pewawancara akan mewawancaraimu lewat video call — dan menilai jawabanmu.")
                     .font(.system(size: 14.5))
                     .foregroundColor(Theme.textSecond)
                     .lineSpacing(3)
@@ -156,9 +150,9 @@ struct InterviewTimeStartView: View {
     private var stepsList: some View {
         VStack(alignment: .leading, spacing: 0) {
             stepRow(1, "Paste Job Description", active: !prep.isWorking && !prep.isReady, isLast: false)
-            stepRow(2, "AI menyusun pertanyaan", active: prep.isWorking, isLast: false)
-            stepRow(3, "Interview via video call", active: prep.isReady, isLast: false)
-            stepRow(4, "Get Interview Feedback", active: false, isLast: true)
+            stepRow(2, "AI menyusun & menyiapkan pertanyaan", active: prep.isWorking, isLast: false)
+            stepRow(3, "Kamu menjawab lewat video call", active: prep.isReady, isLast: false)
+            stepRow(4, "Dapatkan skor & umpan balik", active: false, isLast: true)
         }
     }
 
@@ -178,20 +172,9 @@ struct InterviewTimeStartView: View {
                     Rectangle().fill(Theme.hairline).frame(width: 1.5)
                 }
             }
-//            Text(label)
-//                .font(.system(size: 13.5, weight: .medium))
-//                .foregroundColor(active ? Color(hex: 0xE6E6EA) : Color(hex: 0x9A9AA2))
-//                .padding(.bottom, isLast ? 0 : 20)
-//                .padding(.top, 3)
             Text(label)
                 .font(.system(size: 13.5, weight: .medium))
-                .foregroundColor(active ? Theme.accentInk : Color(hex: 0x9A9AA2))
-                .padding(.horizontal, 10)
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(active ? Theme.accent : Theme.bgSubtle)
-                )
+                .foregroundColor(active ? Color(hex: 0xE6E6EA) : Color(hex: 0x9A9AA2))
                 .padding(.bottom, isLast ? 0 : 20)
                 .padding(.top, 3)
         }
@@ -203,6 +186,10 @@ struct InterviewTimeStartView: View {
         VStack(alignment: .leading, spacing: 0) {
             Spacer(minLength: 0)
 
+            Text("DESKRIPSI PEKERJAAN")
+                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                .tracking(1.6)
+                .foregroundColor(Theme.accent)
             Text("Paste Job Description")
                 .font(.system(size: 21, weight: .semibold))
                 .foregroundColor(Theme.textPrimary)
@@ -211,6 +198,9 @@ struct InterviewTimeStartView: View {
                 .font(.system(size: 14))
                 .foregroundColor(Theme.textSecond)
                 .padding(.top, 6)
+
+//            segmentedControl
+//                .padding(.top, 22)
 
             Group {
                 switch mode {
@@ -222,6 +212,11 @@ struct InterviewTimeStartView: View {
 
             if prep.isWorking || prep.isReady {
                 prepStepsList
+                    .padding(.top, 18)
+            }
+
+            if !prep.isWorking && !prep.isReady {
+                followUpPanel
                     .padding(.top, 18)
             }
 
@@ -272,7 +267,7 @@ struct InterviewTimeStartView: View {
                     Text("Paste Job Description di sini — peran, tanggung jawab, dan kualifikasi…")
                         .font(.system(size: 14))
                         .foregroundColor(Theme.textFaint)
-                        .padding(.horizontal, 22).padding(.vertical, 14)
+                        .padding(.horizontal, 22).padding(.vertical, 24)
                         .allowsHitTesting(false)
                 }
 
@@ -290,7 +285,7 @@ struct InterviewTimeStartView: View {
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundColor(Theme.textMuted)
                 Spacer()
-                Button("Template Job Description") { jobText = Self.sampleJD }
+                Button("Coba contoh lowongan") { jobText = Self.sampleJD }
                     .buttonStyle(.plain)
                     .font(.system(size: 13))
                     .foregroundColor(Color(hex: 0x9A9AA2))
@@ -413,6 +408,58 @@ struct InterviewTimeStartView: View {
         .animation(.easeInOut(duration: 0.3), value: prep.steps)
     }
 
+        private var followUpPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $followUpOn) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Aktifkan Follow-up Question")
+                        .font(.system(size: 13.5, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Text("Maks 2 pertanyaan pendalaman via RunPod (TTS cloud)")
+                        .font(.system(size: 11.5))
+                        .foregroundColor(Theme.textMuted)
+                }
+            }
+            .toggleStyle(.switch)
+            .onChange(of: followUpOn) { _, on in
+                if !on { prep.runpodEndpoint = ""; prep.runpodKey = "" }
+            }
+
+            if followUpOn {
+                VStack(spacing: 8) {
+                    TextField("RunPod endpoint ID", text: $prep.runpodEndpoint)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5, design: .monospaced))
+                        .foregroundColor(Theme.textPrimary)
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.bgSubtle))
+                    SecureField("RunPod API key", text: $prep.runpodKey)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12.5, design: .monospaced))
+                        .foregroundColor(Theme.textPrimary)
+                        .padding(10)
+                        .background(RoundedRectangle(cornerRadius: 8).fill(Theme.bgSubtle))
+                    if prep.followUpEnabled {
+                        HStack(spacing: 6) {
+                            Image(systemName: "checkmark.circle.fill")
+                                .font(.system(size: 11)).foregroundColor(.green)
+                            Text("RunPod siap — follow-up akan aktif saat interview")
+                                .font(.system(size: 11)).foregroundColor(Theme.textMuted)
+                            Spacer()
+                        }
+                    } else {
+                        Text("Isi kedua field untuk mengaktifkan.")
+                            .font(.system(size: 11)).foregroundColor(Theme.textMuted)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            }
+        }
+        .padding(16)
+        .background(RoundedRectangle(cornerRadius: 12).fill(Theme.bgSubtle.opacity(0.5)))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.textMuted.opacity(0.12)))
+    }
+
         private var startButton: some View {
         VStack(spacing: 10) {
             Button(action: primaryAction) {
@@ -436,7 +483,7 @@ struct InterviewTimeStartView: View {
             .disabled(!buttonEnabled)
 
             Text(prep.isReady ? "Semua pertanyaan siap · klik untuk masuk"
-                              : "Butuh sekitar 5–10 menit · 4 pertanyaan teknis")
+                              : "Butuh sekitar 10–15 menit · 4 pertanyaan teknis")
                 .font(.system(size: 12.5))
                 .foregroundColor(Theme.textMuted)
                 .frame(maxWidth: .infinity)
