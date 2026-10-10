@@ -1,0 +1,38 @@
+{
+  "fill" : {
+    "automatic-gradient" : "srgb:0.85098,0.46667,0.34118,1.00000"
+  },
+  "groups" : [
+    {
+      "layers" : [
+        {
+          "glass" : true,
+          "hidden" : false,
+          "image-name" : "icon_gemala_ai.svg",
+          "name" : "icon_gemala_ai",
+          "position" : {
+            "scale" : 9,
+            "translation-in-points" : [
+              0,
+              0
+            ]
+          }
+        }
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
+    }
+  ],
+  "supported-platforms" : {
+    "circles" : [
+      "watchOS"
+    ],
+    "squares" : "shared"
+  }
+}
