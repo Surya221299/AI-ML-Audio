@@ -2,58 +2,22 @@
 //  InterviewTimeStart.swift
 //  InterviewTime
 //
-//  Layar awal aplikasi macOS: tempel / unggah deskripsi pekerjaan
+//  Layar awal aplikasi macOS: tempel deskripsi pekerjaan
 //  untuk memulai wawancara dengan AI.
-//
-//  SwiftUI · macOS 13+ · drop file ini ke project Xcode kamu.
 //
 
 import SwiftUI
-import UniformTypeIdentifiers
-
-// MARK: - Palet & Konstanta Desain
-
-private enum Theme {
-    static let accent      = Color(hex: 0xD97757)
-    static let accentInk   = Color(hex: 0x1A120E)   // teks di atas accent
-
-    static let bgWindow    = Color(hex: 0x16161A)
-    static let bgSidebar   = Color(hex: 0x191919)
-    static let bgTitlebar  = Color(hex: 0x1B1B1F)
-    static let bgField     = Color(hex: 0x1A1A1D)
-    static let bgSubtle    = Color(hex: 0x26262B)
-    static let bgTabActive = Color(hex: 0x2E2E34)
-    static let bgTabTrack  = Color(hex: 0x202024)
-
-    static let textPrimary = Color(hex: 0xF2F2F4)
-    static let textSecond  = Color(hex: 0x97979F)
-    static let textMuted   = Color(hex: 0x6C6C74)
-    static let textFaint   = Color(hex: 0x5F5F66)
-
-    static let hairline    = Color.white.opacity(0.09)
-    static let hairlineSoft = Color.white.opacity(0.06)
-}
-
-private enum InputMode { case paste, upload }
 
 // MARK: - Root View
 
 struct InterviewTimeStartView: View {
-    @State private var mode: InputMode = .paste
     @State private var jobText: String = ""
-    @State private var fileName: String? = nil
-    @State private var isTargetedForDrop = false
-    @State private var isStarting = false
-    @State private var showFileImporter = false
     @StateObject private var prep = InterviewPrep()
     @State private var followUpOn = false
     @State private var enterInterview = false      // true → tampilkan ConversationView
 
     private var canStart: Bool {
-        switch mode {
-        case .paste:  return !jobText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        case .upload: return fileName != nil
-        }
+        !jobText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
@@ -74,19 +38,9 @@ struct InterviewTimeStartView: View {
         }
         .frame(minWidth: 960, minHeight: 560)
         .background(Theme.bgWindow)
-        .overlay(alignment: .center) { if isStarting { startingOverlay } }
-        .fileImporter(
-            isPresented: $showFileImporter,
-            allowedContentTypes: [.pdf, .plainText, UTType(filenameExtension: "docx") ?? .data],
-            allowsMultipleSelection: false
-        ) { result in
-            if case let .success(urls) = result, let url = urls.first {
-                fileName = url.lastPathComponent
-            }
-        }
     }
 
-    // MARK: Sidebar (branding)
+    // MARK: - Sidebar (branding)
 
     private var sidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -129,35 +83,36 @@ struct InterviewTimeStartView: View {
             HStack(spacing: 8) {
                 Text("ON-DEVICE")
                     .font(.system(size: 10, weight: .medium, design: .monospaced))
-                    .tracking(1)
                     .foregroundColor(Theme.textFaint)
                     .padding(.horizontal, 7).padding(.vertical, 3)
-                    .overlay(RoundedRectangle(cornerRadius: 5).stroke(Theme.hairline, lineWidth: 1))
-                Text("Semua proses berjalan lokal di perangkat.")
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.textMuted)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(Theme.bgSubtle))
+                Text("STT lokal · LLM lokal")
+                    .font(.system(size: 11.5))
+                    .foregroundColor(Theme.textFaint)
             }
         }
-        .padding(.horizontal, 40)
-        .padding(.vertical, 44)
-        .frame(width: 384)
+        .padding(.horizontal, 36)
+        .padding(.top, 36)
+        .padding(.bottom, 28)
+        .frame(width: 380)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
         .background(Theme.bgSidebar)
         .overlay(alignment: .trailing) {
-            Rectangle().fill(Theme.hairlineSoft).frame(width: 1)
+            Rectangle().fill(Theme.hairline).frame(width: 1)
         }
     }
 
-    private enum StepStatus: Equatable {
-        case completed
-        case active
-        case pending
-    }
+    // MARK: - Status Langkah
+
+    private enum StepStatus { case completed, active, pending }
 
     private var step1Status: StepStatus {
-        if canStart || prep.isWorking || prep.isReady || prep.interviewCompleted {
+        if prep.isReady || prep.isWorking || prep.interviewCompleted {
             return .completed
+        } else if !jobText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .active
         }
-        return .active
+        return .pending
     }
 
     private var step2Status: StepStatus {
@@ -270,7 +225,7 @@ struct InterviewTimeStartView: View {
         .shadow(color: status == .completed ? Theme.accent.opacity(0.28) : .clear, radius: 8, y: 3)
     }
 
-    // MARK: Input pane
+    // MARK: - Input pane
 
     private var inputPane: some View {
         GeometryReader { geo in
@@ -289,16 +244,13 @@ struct InterviewTimeStartView: View {
                         .foregroundColor(Theme.textSecond)
                         .padding(.top, 6)
 
-//            segmentedControl
-//                .padding(.top, 22)
+                    pasteArea
+                        .padding(.top, 16)
 
-                    Group {
-                        switch mode {
-                        case .paste:  pasteArea
-                        case .upload: uploadArea
-                        }
+                    if case .failed(let msg) = prep.stage {
+                        errorBanner(msg)
+                            .padding(.top, 16)
                     }
-                    .padding(.top, 16)
 
                     if prep.isWorking || prep.isReady {
                         prepStepsList
@@ -322,32 +274,7 @@ struct InterviewTimeStartView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-//    private var segmentedControl: some View {
-//        HStack(spacing: 3) {
-//            tabButton("Tempel teks", isActive: mode == .paste) { mode = .paste }
-//            tabButton("Unggah file", isActive: mode == .upload) { mode = .upload }
-//        }
-//        .padding(3)
-//        .background(RoundedRectangle(cornerRadius: 9).fill(Theme.bgTabTrack))
-//        .overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.hairline, lineWidth: 1))
-//    }
-
-    private func tabButton(_ title: String, isActive: Bool, _ action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: 13, weight: .medium))
-                .foregroundColor(isActive ? Color(hex: 0xF0F0F2) : Color(hex: 0x88888F))
-                .padding(.horizontal, 16).padding(.vertical, 7)
-                .background(
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(isActive ? Theme.bgTabActive : .clear)
-                        .shadow(color: .black.opacity(isActive ? 0.35 : 0), radius: 2, y: 1)
-                )
-        }
-        .buttonStyle(.plain)
-    }
-
-    // MARK: Paste
+    // MARK: - Paste Area
 
     private var pasteArea: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -393,80 +320,34 @@ struct InterviewTimeStartView: View {
         return "\(n) kata"
     }
 
-    // MARK: Upload
+    // MARK: - Error Banner
 
-    private var uploadArea: some View {
-        RoundedRectangle(cornerRadius: 12)
-            .fill(isTargetedForDrop ? Theme.accent.opacity(0.08) : Theme.bgField)
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .strokeBorder(
-                        isTargetedForDrop ? Theme.accent : Color.white.opacity(0.14),
-                        style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])
-                    )
-            )
-            .frame(height: 236)
-            .overlay {
-                if let name = fileName { fileChip(name) } else { dropPrompt }
-            }
-            .contentShape(Rectangle())
-            .onTapGesture { showFileImporter = true }
-            .onDrop(of: [.fileURL], isTargeted: $isTargetedForDrop) { providers in
-                providers.first?.loadObject(ofClass: URL.self) { url, _ in
-                    if let url { DispatchQueue.main.async { fileName = url.lastPathComponent } }
-                }
-                return true
-            }
-    }
-
-    private var dropPrompt: some View {
-        VStack(spacing: 4) {
-            RoundedRectangle(cornerRadius: 11)
-                .fill(Theme.bgSubtle)
-                .frame(width: 44, height: 44)
-                .overlay(Image(systemName: "arrow.up").font(.system(size: 16, weight: .semibold)).foregroundColor(Color(hex: 0xB5B5BD)))
-                .padding(.bottom, 8)
-            Text("Seret & lepas file di sini")
-                .font(.system(size: 14.5, weight: .medium))
-                .foregroundColor(Color(hex: 0xE6E6EA))
-            Text("atau klik untuk memilih · PDF, DOCX, TXT")
-                .font(.system(size: 12.5))
-                .foregroundColor(Color(hex: 0x7C7C84))
-        }
-    }
-
-    private func fileChip(_ name: String) -> some View {
+    private func errorBanner(_ message: String) -> some View {
         HStack(spacing: 12) {
-            RoundedRectangle(cornerRadius: 7)
-                .fill(Theme.accent)
-                .frame(width: 34, height: 34)
-                .overlay(Text("DOC").font(.system(size: 10, weight: .semibold, design: .monospaced)).foregroundColor(Theme.accentInk))
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 16))
+                .foregroundColor(Color(hex: 0xE05D52))
             VStack(alignment: .leading, spacing: 2) {
-                Text(name)
-                    .font(.system(size: 13.5, weight: .medium))
-                    .foregroundColor(Color(hex: 0xEDEDF0))
-                    .lineLimit(1)
-                Text("Siap dianalisis")
+                Text("Persiapan Terhenti")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Color(hex: 0xFFD2CF))
+                Text(message)
                     .font(.system(size: 12))
-                    .foregroundColor(Color(hex: 0x7C7C84))
+                    .foregroundColor(Color(hex: 0xE8A09B))
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Button { fileName = nil } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Color(hex: 0x9A9AA2))
-                    .frame(width: 26, height: 26)
-                    .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.white.opacity(0.1), lineWidth: 1))
-            }
-            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 14).padding(.vertical, 12)
-        .background(RoundedRectangle(cornerRadius: 10).fill(Theme.bgSubtle))
-        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Theme.hairline, lineWidth: 1))
-        .padding(20)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color(hex: 0x361614).opacity(0.85))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10)
+                .stroke(Color(hex: 0xE05D52).opacity(0.35), lineWidth: 1)
+        )
     }
-
-    // MARK: CTA
 
     // MARK: - Daftar progres persiapan (shimmer)
 
@@ -501,7 +382,9 @@ struct InterviewTimeStartView: View {
         .animation(.easeInOut(duration: 0.3), value: prep.steps)
     }
 
-        private var followUpPanel: some View {
+    // MARK: - Follow-up panel
+
+    private var followUpPanel: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle(isOn: $followUpOn) {
                 VStack(alignment: .leading, spacing: 2) {
@@ -553,7 +436,9 @@ struct InterviewTimeStartView: View {
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(Theme.textMuted.opacity(0.12)))
     }
 
-        private var startButton: some View {
+    // MARK: - Start Button
+
+    private var startButton: some View {
         VStack(spacing: 10) {
             Button(action: primaryAction) {
                 HStack(spacing: 8) {
@@ -612,24 +497,7 @@ struct InterviewTimeStartView: View {
         Task { await prep.prepare(jobDescription: jd) }
     }
 
-    private var startingOverlay: some View {
-        ZStack {
-            Theme.bgWindow.opacity(0.86).ignoresSafeArea()
-            VStack(spacing: 18) {
-                ProgressView()
-                    .progressViewStyle(.circular)
-                    .controlSize(.large)
-                    .tint(Theme.accent)
-                Text("Menyiapkan ruang wawancara…")
-                    .font(.system(size: 14.5))
-                    .foregroundColor(Color(hex: 0xCFCFD4))
-            }
-        }
-    }
-
-
-
-    // MARK: Contoh JD
+    // MARK: - Contoh JD
 
     static let sampleJD = """
     Backend Engineer (Golang) — Fintech
@@ -645,59 +513,6 @@ struct InterviewTimeStartView: View {
     • Pengalaman Docker, Kubernetes, dan CI/CD
     • Memahami microservices & distributed systems
     """
-}
-
-// MARK: - Utilitas Warna
-
-extension Color {
-    /// Warna dari hex 0xRRGGBB.
-    init(hex: UInt, alpha: Double = 1) {
-        self.init(
-            .sRGB,
-            red:   Double((hex >> 16) & 0xFF) / 255,
-            green: Double((hex >> 8)  & 0xFF) / 255,
-            blue:  Double(hex & 0xFF)         / 255,
-            opacity: alpha
-        )
-    }
-}
-
-// MARK: - Preview
-
-
-
-// MARK: - Shimmer Text (teks abu-abu dengan kilau bergerak, ala loading scraping)
-
-struct ShimmerText: View {
-    let text: String
-    @State private var phase: CGFloat = -1
-
-    init(_ text: String) { self.text = text }
-
-    var body: some View {
-        Text(text)
-            .font(.system(size: 14, weight: .medium))
-            .foregroundColor(Color(hex: 0x8A8A90))
-            .overlay(
-                GeometryReader { geo in
-                    LinearGradient(
-                        colors: [.clear, .white.opacity(0.75), .clear],
-                        startPoint: .leading, endPoint: .trailing
-                    )
-                    .frame(width: geo.size.width * 0.5)
-                    .offset(x: phase * geo.size.width * 1.5)
-                    .blendMode(.screen)
-                }
-                .mask(
-                    Text(text).font(.system(size: 14, weight: .medium))
-                )
-            )
-            .onAppear {
-                withAnimation(.linear(duration: 1.2).repeatForever(autoreverses: false)) {
-                    phase = 1
-                }
-            }
-    }
 }
 
 #Preview {
