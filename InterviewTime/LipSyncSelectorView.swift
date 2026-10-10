@@ -69,7 +69,7 @@ struct LipSyncSelectorView: View {
                     Image(systemName: "face.smiling.inverse")
                         .font(.system(size: 52))
                         .foregroundStyle(.indigo)
-                    Text("InterviewTime")
+                    Text("GemalaAI")
                         .font(.system(size: 28, weight: .bold, design: .monospaced))
                         .foregroundColor(.white)
                     Text("Choose a lip-sync method")

@@ -31,7 +31,7 @@ struct SimpleContentView: View {
                     Image(systemName: "waveform.circle.fill")
                         .font(.system(size: 48))
                         .foregroundStyle(.indigo)
-                    Text("InterviewTime TTS")
+                    Text("GemalaAI TTS")
                         .font(.system(size: 24, weight: .bold, design: .monospaced))
                         .foregroundColor(.white)
                     Text("MLX · VoxCPM2-8bit")

@@ -101,7 +101,7 @@ struct InterviewTimeStartView: View {
                             .frame(width: 11, height: 11)
                     )
                     .shadow(color: Theme.accent.opacity(0.35), radius: 7, y: 4)
-                Text("InterviewTime")
+                Text("GemalaAI")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(Color(hex: 0xEDEDF0))
             }

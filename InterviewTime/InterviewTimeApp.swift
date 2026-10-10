@@ -8,7 +8,7 @@ import SwiftUI
 @main
 struct InterviewTimeApp: App {
     var body: some Scene {
-        WindowGroup {
+        WindowGroup("GemalaAI") {
             InterviewTimeStartView()
         }
     }
