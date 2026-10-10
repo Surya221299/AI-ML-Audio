@@ -561,7 +561,7 @@ struct InterviewTimeStartView: View {
                         ProgressView().controlSize(.small).tint(Theme.accentInk)
                         Text(workingLabel).font(.system(size: 15, weight: .semibold))
                     } else {
-                        Text(prep.isReady ? "Mulai Sekarang" : "Mulai wawancara")
+                        Text(prep.isReady ? "Mulai Sekarang" : "Generate Interview Questions")
                             .font(.system(size: 15, weight: .semibold))
                         Image(systemName: "arrow.right").font(.system(size: 15, weight: .semibold))
                     }
