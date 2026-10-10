@@ -72,7 +72,7 @@ struct InterviewTimeStartView: View {
             sidebar
             inputPane
         }
-        .frame(minWidth: 1000, minHeight: 680)
+        .frame(minWidth: 960, minHeight: 560)
         .background(Theme.bgWindow)
         .overlay(alignment: .center) { if isStarting { startingOverlay } }
         .fileImporter(
@@ -273,50 +273,53 @@ struct InterviewTimeStartView: View {
     // MARK: Input pane
 
     private var inputPane: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Spacer(minLength: 0)
-
-            Text("DESKRIPSI PEKERJAAN")
-                .font(.system(size: 11, weight: .medium, design: .monospaced))
-                .tracking(1.6)
-                .foregroundColor(Theme.accent)
-            Text("Paste Job Description")
-                .font(.system(size: 21, weight: .semibold))
-                .foregroundColor(Theme.textPrimary)
-                .padding(.top, 12)
-            Text("AI akan menyusun pertanyaan teknis yang relevan dari Job Description ini.")
-                .font(.system(size: 14))
-                .foregroundColor(Theme.textSecond)
-                .padding(.top, 6)
+        GeometryReader { geo in
+            ScrollView(.vertical) {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text("DESKRIPSI PEKERJAAN")
+                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .tracking(1.6)
+                        .foregroundColor(Theme.accent)
+                    Text("Paste Job Description")
+                        .font(.system(size: 21, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                        .padding(.top, 12)
+                    Text("AI akan menyusun pertanyaan teknis yang relevan dari Job Description ini.")
+                        .font(.system(size: 14))
+                        .foregroundColor(Theme.textSecond)
+                        .padding(.top, 6)
 
 //            segmentedControl
 //                .padding(.top, 22)
 
-            Group {
-                switch mode {
-                case .paste:  pasteArea
-                case .upload: uploadArea
+                    Group {
+                        switch mode {
+                        case .paste:  pasteArea
+                        case .upload: uploadArea
+                        }
+                    }
+                    .padding(.top, 16)
+
+                    if prep.isWorking || prep.isReady {
+                        prepStepsList
+                            .padding(.top, 18)
+                    }
+
+                    if !prep.isWorking && !prep.isReady {
+                        followUpPanel
+                            .padding(.top, 18)
+                    }
+
+                    startButton
+                        .padding(.top, 26)
                 }
+                .padding(.horizontal, 52)
+                .padding(.vertical, 36)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(minHeight: geo.size.height, alignment: .center)
             }
-            .padding(.top, 16)
-
-            if prep.isWorking || prep.isReady {
-                prepStepsList
-                    .padding(.top, 18)
-            }
-
-            if !prep.isWorking && !prep.isReady {
-                followUpPanel
-                    .padding(.top, 18)
-            }
-
-            startButton
-                .padding(.top, 26)
-
-            Spacer(minLength: 0)
         }
-        .padding(.horizontal, 52)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
 //    private var segmentedControl: some View {
