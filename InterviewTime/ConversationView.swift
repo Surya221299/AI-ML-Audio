@@ -365,6 +365,8 @@ struct ConversationView: View {
     private func finishAndShowFeedback(declined: Bool) async {
         isTalking = false
         showFeedback = true
+        prep.interviewCompleted = true
+        prep.feedbackCompleted = true
         declinedAtClosing = declined
         // reset progres
         noQFBDone = false; overallDone = false; questionsDoneCount = 0

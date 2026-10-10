@@ -34,6 +34,8 @@ final class InterviewPrep: ObservableObject {
     @Published var steps: [PrepStep] = []
     @Published var questions: [String] = []
     @Published var jobDescription = ""
+    @Published var interviewCompleted = false
+    @Published var feedbackCompleted = false
 
     let whisper = WhisperService()
     private let ollama = OllamaClient(baseURL: URL(string: "http://127.0.0.1:11434")!)
@@ -114,6 +116,8 @@ final class InterviewPrep: ObservableObject {
 
     func prepare(jobDescription: String) async {
         self.jobDescription = jobDescription
+        interviewCompleted = false
+        feedbackCompleted = false
         warmUpRunpodIfNeeded()   // panaskan RunPod di background bila follow-up aktif
         print("PREP outputsRoot =", outputsRoot.path)
         print("PREP openingDir exists? =", FileManager.default.fileExists(atPath: openingDir.path))

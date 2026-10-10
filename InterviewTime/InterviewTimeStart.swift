@@ -147,37 +147,127 @@ struct InterviewTimeStartView: View {
         }
     }
 
-    private var stepsList: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            stepRow(1, "Paste Job Description", active: !prep.isWorking && !prep.isReady, isLast: false)
-            stepRow(2, "AI menyusun & menyiapkan pertanyaan", active: prep.isWorking, isLast: false)
-            stepRow(3, "Kamu menjawab lewat video call", active: prep.isReady, isLast: false)
-            stepRow(4, "Dapatkan skor & umpan balik", active: false, isLast: true)
-        }
+    private enum StepStatus: Equatable {
+        case completed
+        case active
+        case pending
     }
 
-    private func stepRow(_ n: Int, _ label: String, active: Bool, isLast: Bool) -> some View {
-        HStack(alignment: .top, spacing: 14) {
-            VStack(spacing: 4) {
-                ZStack {
+    private var step1Status: StepStatus {
+        if canStart || prep.isWorking || prep.isReady || prep.interviewCompleted {
+            return .completed
+        }
+        return .active
+    }
+
+    private var step2Status: StepStatus {
+        if prep.isReady || prep.interviewCompleted {
+            return .completed
+        } else if prep.isWorking {
+            return .active
+        }
+        return .pending
+    }
+
+    private var step3Status: StepStatus {
+        if prep.interviewCompleted {
+            return .completed
+        } else if prep.isReady {
+            return .active
+        }
+        return .pending
+    }
+
+    private var step4Status: StepStatus {
+        if prep.feedbackCompleted {
+            return .completed
+        } else if prep.interviewCompleted {
+            return .active
+        }
+        return .pending
+    }
+
+    private var stepsList: some View {
+        VStack(spacing: 9) {
+            stepRow(1, "Paste Job Description", status: step1Status)
+            stepRow(2, "AI menyusun & menyiapkan pertanyaan", status: step2Status)
+            stepRow(3, "Kamu menjawab lewat video call", status: step3Status)
+            stepRow(4, "Dapatkan skor & umpan balik", status: step4Status)
+        }
+        .animation(.easeInOut(duration: 0.3), value: step1Status)
+        .animation(.easeInOut(duration: 0.3), value: step2Status)
+        .animation(.easeInOut(duration: 0.3), value: step3Status)
+        .animation(.easeInOut(duration: 0.3), value: step4Status)
+    }
+
+    private func stepRow(_ n: Int, _ label: String, status: StepStatus) -> some View {
+        HStack(spacing: 12) {
+            // Nomor / Checkmark badge
+            ZStack {
+                switch status {
+                case .completed:
                     Circle()
-                        .fill(active ? Theme.accent : Theme.bgSubtle)
-                        .overlay(Circle().stroke(active ? .clear : Theme.hairline, lineWidth: 1))
+                        .fill(Theme.accentInk.opacity(0.18))
+                    Text("\(n)")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(Theme.accentInk)
+                case .active:
+                    Circle()
+                        .fill(Theme.accent)
+                    Text("\(n)")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(Theme.accentInk)
+                case .pending:
+                    Circle()
+                        .fill(Theme.bgSubtle)
+                        .overlay(Circle().stroke(Theme.hairline, lineWidth: 1))
                     Text("\(n)")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(active ? Theme.accentInk : Color(hex: 0x8A8A92))
-                }
-                .frame(width: 26, height: 26)
-                if !isLast {
-                    Rectangle().fill(Theme.hairline).frame(width: 1.5)
+                        .foregroundColor(Color(hex: 0x8A8A92))
                 }
             }
+            .frame(width: 24, height: 24)
+
             Text(label)
-                .font(.system(size: 13.5, weight: .medium))
-                .foregroundColor(active ? Color(hex: 0xE6E6EA) : Color(hex: 0x9A9AA2))
-                .padding(.bottom, isLast ? 0 : 20)
-                .padding(.top, 3)
+                .font(.system(size: 13, weight: status == .completed ? .semibold : (status == .active ? .medium : .regular)))
+                .foregroundColor(
+                    status == .completed ? Theme.accentInk :
+                    (status == .active ? Color(hex: 0xF0F0F3) : Color(hex: 0x8E8E96))
+                )
+                .lineLimit(2)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 4)
+
+            // Indikator kanan
+            if status == .completed {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Theme.accentInk.opacity(0.85))
+            } else if status == .active && n == 2 && prep.isWorking {
+                ProgressView()
+                    .controlSize(.small)
+            }
         }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(
+                    status == .completed ? Theme.accent :
+                    (status == .active ? Theme.accent.opacity(0.12) : Theme.bgSubtle.opacity(0.35))
+                )
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(
+                    status == .completed ? Theme.accent :
+                    (status == .active ? Theme.accent.opacity(0.45) : Theme.hairlineSoft),
+                    lineWidth: 1
+                )
+        )
+        .shadow(color: status == .completed ? Theme.accent.opacity(0.28) : .clear, radius: 8, y: 3)
     }
 
     // MARK: Input pane
