@@ -102,7 +102,7 @@ struct ConversationView: View {
             guard !started else { return }
             started = true
             transcripts = Array(repeating: "", count: prep.questions.count)
-            portrait = NSImage(named: "Interviewer")
+            portrait = InterviewPrep.loadInterviewerImage()
             startInitialIdleLoop()
             await playOpening()
         }

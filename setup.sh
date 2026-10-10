@@ -142,6 +142,38 @@ else
   echo "    Symlink MuseTalk/models dibuat."
 fi
 
+# Patch: macOS dyld section '__DATA/__thread_bss' has zero-fill section type but offset != 0
+echo "    Memeriksa dan menambal binary .so di musetalk-env untuk kompatibilitas macOS..."
+envs/musetalk-env/bin/python -c '
+import glob, struct, subprocess
+for path in glob.glob("envs/musetalk-env/lib/python3.10/site-packages/**/*.so", recursive=True):
+    with open(path, "rb") as f:
+        data = bytearray(f.read())
+    if len(data) < 32 or struct.unpack_from("<I", data, 0)[0] != 0xfeedfacf:
+        continue
+    ncmds = struct.unpack_from("<I", data, 16)[0]
+    pos, mod = 32, False
+    for _ in range(ncmds):
+        if pos + 8 > len(data): break
+        cmd, csz = struct.unpack_from("<II", data, pos)
+        if cmd == 0x19:
+            nsects = struct.unpack_from("<I", data, pos + 64)[0]
+            sp = pos + 72
+            for _ in range(nsects):
+                if sp + 80 > len(data): break
+                off = struct.unpack_from("<I", data, sp + 48)[0]
+                flags = struct.unpack_from("<I", data, sp + 64)[0]
+                if (flags & 0xff) in (1, 0x12) and off != 0:
+                    struct.pack_into("<I", data, sp + 48, 0)
+                    mod = True
+                sp += 80
+        pos += csz
+    if mod:
+        with open(path, "wb") as f: f.write(data)
+        subprocess.run(["codesign", "-s", "-", "-f", path], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+' 2>/dev/null || true
+echo "    ✓ Patch macOS dyld selesai."
+
 # Entitlements: path absolut temporary-exception harus cocok lokasi checkout SETIAP orang.
 # Auto-perbaiki supaya tidak kena "permission denied" saat render ke outputs/ (isu yang
 # pernah kita alami — path hardcode ke Mac orang lain tidak akan cocok di Mac lain).

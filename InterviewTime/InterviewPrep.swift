@@ -662,8 +662,36 @@ final class InterviewPrep: ObservableObject {
         return urls
     }
 
+    static func loadInterviewerImage() -> NSImage? {
+        if let img = NSImage(named: "Interviewer") ?? NSImage(named: "interviewer") {
+            return img
+        }
+        // Fallback langsung ke file fisik di folder asset project
+        let projectRoot = URL(fileURLWithPath: #file)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        let assetDirs = [
+            projectRoot.appendingPathComponent("InterviewTime/Assets.xcassets/Interviewer.imageset"),
+            projectRoot.appendingPathComponent("InterviewTime/Assets.xcassets/interviewer.imageset")
+        ]
+        let fm = FileManager.default
+        for dir in assetDirs {
+            if let files = try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil) {
+                for f in files {
+                    let ext = f.pathExtension.lowercased()
+                    if ["png", "jpg", "jpeg", "webp"].contains(ext) {
+                        if let img = NSImage(contentsOf: f) {
+                            return img
+                        }
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
     private func sourceImageData() throws -> Data {
-        guard let img = NSImage(named: "Interviewer"),
+        guard let img = Self.loadInterviewerImage(),
               let tiff = img.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else {

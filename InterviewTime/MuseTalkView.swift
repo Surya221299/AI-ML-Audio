@@ -145,7 +145,7 @@ struct MuseTalkView: View {
     private var cacheDir: URL { projectRoot.appendingPathComponent("outputs") }
 
     private func sourceImageData() throws -> Data {
-        guard let img = NSImage(named: "Interviewer"),
+        guard let img = InterviewPrep.loadInterviewerImage(),
               let tiff = img.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else {
@@ -243,7 +243,7 @@ struct MuseTalkView: View {
         .animation(.easeInOut(duration: 0.22), value: showSettings)
         .task {
             runpodKey = Keychain.get(account: "museTalkRunpodKey")
-            portrait = NSImage(named: "Interviewer").map { cappedImage($0, maxSide: 384) }
+            portrait = InterviewPrep.loadInterviewerImage().map { cappedImage($0, maxSide: 384) }
             startInitialIdleLoop()
             await checkServer()
             if useCloudTTS { warmUpRunpod() }
