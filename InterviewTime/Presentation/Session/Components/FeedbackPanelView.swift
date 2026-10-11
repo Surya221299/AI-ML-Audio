@@ -74,9 +74,9 @@ struct FeedbackPanelView: View {
                                 .foregroundColor(.white.opacity(0.7))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
-                        feedbackList("✅ Kekuatan", fb.strengths)
-                        feedbackList("🔧 Perlu Ditingkatkan", fb.weaknessesOrGaps)
-                        feedbackList("💡 Saran untuk Kamu", fb.feedbackForCandidate)
+                        feedbackBlock(title: "Kekuatan", items: fb.strengths, type: .positive)
+                        feedbackBlock(title: "Perlu Ditingkatkan", items: fb.weaknessesOrGaps, type: .improvement)
+                        feedbackBlock(title: "Saran untuk Kamu", items: fb.feedbackForCandidate, type: .neutral)
                     } else {
                         loadingRow("Menyusun feedback keseluruhan…")
                     }
@@ -87,7 +87,7 @@ struct FeedbackPanelView: View {
                     Divider().background(Color.white.opacity(0.15))
                     sectionTitle("Feedback per Pertanyaan")
                     ForEach(Array(questionFBs.enumerated()), id: \.offset) { idx, fb in
-                        VStack(alignment: .leading, spacing: 6) {
+                        VStack(alignment: .leading, spacing: 8) {
                             Text("Pertanyaan \(idx + 1)")
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundColor(Color(hex: 0xD97757))
@@ -116,8 +116,8 @@ struct FeedbackPanelView: View {
                             .cornerRadius(6)
                             .padding(.vertical, 2)
 
-                            feedbackList("Bagus", fb.plusPoints)
-                            feedbackList("Perbaikan", fb.improvements)
+                            feedbackBlock(title: "Bagus", items: fb.plusPoints, type: .positive)
+                            feedbackBlock(title: "Perlu Ditingkatkan", items: fb.improvements, type: .improvement)
                         }
                         .padding(12)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -160,19 +160,98 @@ struct FeedbackPanelView: View {
         .padding(.vertical, 4)
     }
 
+    private enum FeedbackBlockType {
+        case positive
+        case improvement
+        case neutral
+    }
+
     @ViewBuilder
-    private func feedbackList(_ title: String, _ items: [String]?) -> some View {
+    private func feedbackBlock(title: String, items: [String]?, type: FeedbackBlockType) -> some View {
         if let items, !items.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                Text(title).font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white)
-                ForEach(items, id: \.self) { it in
-                    Text("• \(it)").font(.system(size: 13))
-                        .foregroundColor(.white.opacity(0.8))
-                        .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 7) {
+                    switch type {
+                    case .positive:
+                        Image(systemName: "checkmark.seal.fill")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(.green)
+                        Text(title)
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.green)
+                    case .improvement:
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(.yellow)
+                        Text(title)
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.yellow)
+                    case .neutral:
+                        Image(systemName: "lightbulb.fill")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundColor(Color(hex: 0x64B5F6))
+                        Text(title)
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(Color(hex: 0x64B5F6))
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 5) {
+                    ForEach(items, id: \.self) { it in
+                        HStack(alignment: .top, spacing: 6) {
+                            Text("•")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(accentColor(for: type))
+                            Text(it)
+                                .font(.system(size: 13))
+                                .foregroundColor(itemTextColor(for: type))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
                 }
             }
+            .padding(12)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(blockBackgroundColor(for: type))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(blockBorderColor(for: type), lineWidth: 1)
+            )
+        }
+    }
+
+    private func accentColor(for type: FeedbackBlockType) -> Color {
+        switch type {
+        case .positive: return .green
+        case .improvement: return .yellow
+        case .neutral: return Color(hex: 0x64B5F6)
+        }
+    }
+
+    private func itemTextColor(for type: FeedbackBlockType) -> Color {
+        switch type {
+        case .positive: return Color.green.opacity(0.92)
+        case .improvement: return Color.yellow.opacity(0.92)
+        case .neutral: return Color.white.opacity(0.85)
+        }
+    }
+
+    private func blockBackgroundColor(for type: FeedbackBlockType) -> Color {
+        switch type {
+        case .positive: return Color.green.opacity(0.12)
+        case .improvement: return Color.yellow.opacity(0.12)
+        case .neutral: return Color.blue.opacity(0.08)
+        }
+    }
+
+    private func blockBorderColor(for type: FeedbackBlockType) -> Color {
+        switch type {
+        case .positive: return Color.green.opacity(0.3)
+        case .improvement: return Color.yellow.opacity(0.3)
+        case .neutral: return Color.blue.opacity(0.2)
         }
     }
 }
