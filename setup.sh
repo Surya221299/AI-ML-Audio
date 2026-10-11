@@ -204,11 +204,10 @@ else
 fi
 
 echo "==> [6/6] Cek file penting lainnya..."
-if grep -q "_pad_start" server_mlx.py 2>/dev/null; then
-  echo "    server_mlx.py sudah punya fix padding awal audio."
+if grep -q "_pad_start" backend/tts/server_mlx.py 2>/dev/null; then
+  echo "    backend/tts/server_mlx.py sudah punya fix padding awal audio."
 else
-  echo "⚠️  server_mlx.py BELUM punya fix padding awal audio (huruf pertama TTS bisa terpotong)."
-  echo "    Tambahkan manual: fungsi _pad_start() + panggil setelah _normalize() di /speak dan /speak_stream."
+  echo "⚠️  backend/tts/server_mlx.py BELUM punya fix padding awal audio."
 fi
 
 if [ ! -f outputs/idle_loop1.mp4 ] && [ ! -f outputs/idle_loop2.mp4 ]; then

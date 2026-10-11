@@ -1,0 +1,15 @@
+# Core Web & API Framework
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+python-multipart>=0.0.6
+
+# Audio Processing
+soundfile>=0.12.1
+numpy>=1.24.0
+
+# Computer Vision & Models
+opencv-python-headless>=4.8.0
+transformers>=4.30.0
+onnxruntime>=1.16.0
+Pillow>=9.5.0

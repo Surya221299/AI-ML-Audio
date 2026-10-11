@@ -1,0 +1,15 @@
+# Local Apple Silicon Requirements (macOS)
+-r requirements.txt
+
+# MLX Audio (TTS on Apple Silicon)
+mlx>=0.16.0
+mlx-audio>=0.1.0
+
+# CoreML (MuseTalk on Apple Silicon)
+coremltools>=7.0
+torch>=2.2.0
+torchvision>=0.17.0
+einops>=0.6.0
+omegaconf>=2.3.0
+huggingface-hub[cli]>=0.19.0
+gdown>=4.7.0
