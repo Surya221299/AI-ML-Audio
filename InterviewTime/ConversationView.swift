@@ -76,32 +76,38 @@ struct ConversationView: View {
                     }
                 }
 
-                // Feedback overlay (dim + panel kanan 50%)
+                // Feedback overlay (tampilan vertikal terpusat, tidak terpotong ke kanan)
                 if showFeedback {
-                    Rectangle().fill(.black.opacity(0.6))
+                    Rectangle()
+                        .fill(Color.black.opacity(0.75))
                         .background(.ultraThinMaterial)
-                        .ignoresSafeArea().transition(.opacity)
-                    GeometryReader { geo in
-                        HStack(spacing: 0) {
-                            Spacer()
-                            FeedbackPanelView(
-                                declinedAtClosing: declinedAtClosing,
-                                noQFBDone: noQFBDone,
-                                noQuestionsFB: noQuestionsFB,
-                                overallDone: overallDone,
-                                overallFB: overallFB,
-                                questionFBs: questionFBs,
-                                transcripts: transcripts,
-                                questionsDoneCount: questionsDoneCount,
-                                totalQuestions: prep.questions.count,
-                                onExit: { leaveSession() }
-                            )
-                            .frame(width: geo.size.width * 0.5)
-                            .frame(maxHeight: .infinity)
-                            .background(Color(hex: "16161A"))
-                            .transition(.move(edge: .trailing))
-                        }
+                        .ignoresSafeArea()
+                        .transition(.opacity)
+
+                    VStack(spacing: 0) {
+                        FeedbackPanelView(
+                            declinedAtClosing: declinedAtClosing,
+                            noQFBDone: noQFBDone,
+                            noQuestionsFB: noQuestionsFB,
+                            overallDone: overallDone,
+                            overallFB: overallFB,
+                            questionFBs: questionFBs,
+                            transcripts: transcripts,
+                            questionsDoneCount: questionsDoneCount,
+                            totalQuestions: prep.questions.count,
+                            onExit: { leaveSession() }
+                        )
+                        .frame(maxWidth: 860)
+                        .frame(maxHeight: .infinity)
+                        .background(Color(hex: "16161A"))
+                        .overlay(
+                            Rectangle()
+                                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                        )
+                        .shadow(color: Color.black.opacity(0.5), radius: 24, x: 0, y: 10)
                     }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .transition(.opacity.combined(with: .scale(scale: 0.98)))
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)

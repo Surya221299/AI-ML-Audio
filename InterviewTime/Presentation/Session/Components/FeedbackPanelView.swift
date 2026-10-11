@@ -18,7 +18,7 @@ struct FeedbackPanelView: View {
     let onExit: () -> Void
 
     var body: some View {
-        ScrollView {
+        ScrollView(.vertical, showsIndicators: true) {
             VStack(alignment: .leading, spacing: 18) {
                 Text("Hasil Interview")
                     .font(.system(size: 22, weight: .bold))
@@ -63,11 +63,15 @@ struct FeedbackPanelView: View {
                     if overallDone, let fb = overallFB {
                         Divider().background(Color.white.opacity(0.15))
                         if !fb.recommendation.isEmpty {
-                            Text(fb.recommendation).font(.system(size: 15, weight: .semibold))
+                            Text(fb.recommendation)
+                                .font(.system(size: 15, weight: .semibold))
                                 .foregroundColor(.white.opacity(0.9))
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         if !fb.fitVsJD.isEmpty {
-                            Text(fb.fitVsJD).font(.system(size: 13)).foregroundColor(.white.opacity(0.7))
+                            Text(fb.fitVsJD)
+                                .font(.system(size: 13))
+                                .foregroundColor(.white.opacity(0.7))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         feedbackList("✅ Kekuatan", fb.strengths)
@@ -88,7 +92,8 @@ struct FeedbackPanelView: View {
                                 .font(.system(size: 13, weight: .bold))
                                 .foregroundColor(Color(hex: 0xD97757))
                             if !fb.question.isEmpty {
-                                Text(fb.question).font(.system(size: 13, weight: .medium))
+                                Text(fb.question)
+                                    .font(.system(size: 13, weight: .medium))
                                     .foregroundColor(.white.opacity(0.85))
                                     .fixedSize(horizontal: false, vertical: true)
                             }
@@ -114,7 +119,10 @@ struct FeedbackPanelView: View {
                             feedbackList("Bagus", fb.plusPoints)
                             feedbackList("Perbaikan", fb.improvements)
                         }
-                        .padding(12).background(Color.white.opacity(0.04)).cornerRadius(8)
+                        .padding(12)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.white.opacity(0.04))
+                        .cornerRadius(8)
                     }
                     if questionsDoneCount < totalQuestions {
                         loadingRow("Menilai pertanyaan \(questionsDoneCount + 1) dari \(totalQuestions)…")
@@ -134,6 +142,7 @@ struct FeedbackPanelView: View {
             .animation(.easeInOut(duration: 0.3), value: overallDone)
             .animation(.easeInOut(duration: 0.3), value: questionsDoneCount)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func sectionTitle(_ t: String) -> some View {
@@ -143,7 +152,10 @@ struct FeedbackPanelView: View {
     private func loadingRow(_ msg: String) -> some View {
         HStack(spacing: 10) {
             ProgressView().controlSize(.small).tint(.white)
-            Text(msg).font(.system(size: 13)).foregroundColor(.white.opacity(0.65))
+            Text(msg)
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.65))
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.vertical, 4)
     }
@@ -160,6 +172,7 @@ struct FeedbackPanelView: View {
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
