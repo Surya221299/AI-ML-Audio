@@ -1,0 +1,28 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    container_name: interviewtime_backend
+    restart: unless-stopped
+    ports:
+      - "8808:8808"
+      - "8810:8810"
+    environment:
+      - TTS_HOST=0.0.0.0
+      - TTS_PORT=8808
+      - LIPSYNC_HOST=0.0.0.0
+      - LIPSYNC_PORT=8810
+      - MODELS_DIR=/app/models
+    volumes:
+      - ../models:/app/models:ro
+      - ../outputs:/app/outputs
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

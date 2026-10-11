@@ -1,0 +1,22 @@
+# Cloud GPU Requirements (Linux / NVIDIA CUDA)
+-r requirements.txt
+
+# PyTorch with CUDA (install via pip index or conda)
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
+torch>=2.1.0
+torchvision>=0.16.0
+
+# TTS (VoxCPM)
+voxcpm>=0.1.0
+
+# Cloud Platforms (RunPod & Modal)
+runpod>=1.6.0
+modal>=0.63.0
+
+# Deep Learning utilities
+einops>=0.6.0
+omegaconf>=2.3.0
+huggingface-hub[cli]>=0.19.0
+gdown>=4.7.0
+accelerate>=0.22.0
+diffusers>=0.21.0
