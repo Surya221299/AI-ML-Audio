@@ -2,6 +2,8 @@
 
 InterviewTime is an interactive AI mock interview application for macOS. It combines native SwiftUI with local and cloud AI inference to provide real-time voice conversations and lip-synced avatar animations.
 
+![Application Screenshot](screenshot.jpg)
+
 ## Architecture
 
 - **Frontend**: macOS native client built with SwiftUI and AVFoundation.
